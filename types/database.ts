@@ -1,0 +1,42 @@
+export type Group = {
+  id: string;
+  name: string;
+  acronym: string | null;
+  color: string;
+};
+
+export type Product = {
+  id: string;
+  group_id: string;
+  name: string;
+  category: string;
+  sale_price: number;
+  unit_cost: number;
+  stock_quantity: number;
+  is_active: boolean;
+  group?: Group;
+};
+
+export type SaleReport = {
+  gross_revenue: number;
+  total_cost: number;
+  gross_profit: number;
+  total_expenses: number;
+  net_profit: number;
+  sales_count: number;
+  items_sold: number;
+};
+
+export type RecentSale = {
+  id: string;
+  created_at: string;
+  cashier_name: string | null;
+  payment_method: string;
+  gross_total: number;
+  profit_total: number;
+};
+
+export type SaleItemDraft = {
+  product: Product;
+  quantity: number;
+};

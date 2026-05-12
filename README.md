@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Sistema Arraia UFG
 
-## Getting Started
+Sistema serverless para controlar fichas, vendas, baixa de estoque e lucro da festa de arraia dos grupos estudantis da UFG.
 
-First, run the development server:
+## Stack
+
+- Frontend: Next.js App Router
+- Banco: Supabase Postgres
+- Backend serverless: Supabase Edge Functions
+- Persistência: migrations em `supabase/migrations`
+
+## Ambiente
+
+Crie o `.env.local` a partir de `.env.example`:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_REGISTER_SALE_FUNCTION_URL=
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Para a Edge Function, configure os secrets no Supabase:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+supabase secrets set SUPABASE_URL=https://your-project-ref.supabase.co
+supabase secrets set SUPABASE_ANON_KEY=your-anon-key
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Banco de dados
 
-## Learn More
+As migrations criam:
 
-To learn more about Next.js, take a look at the following resources:
+- `groups`: grupos estudantis
+- `products`: produtos e fichas com preço, custo e estoque
+- `sales`: vendas registradas no caixa
+- `sale_items`: itens de cada venda
+- `inventory_movements`: baixa e ajustes de estoque
+- `expenses`: despesas do evento
+- `event_profit_report` e `group_profit_report`: relatórios de lucro
+- `register_sale(payload jsonb)`: RPC transacional para registrar venda e baixar estoque
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Rodando localmente com Supabase CLI:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+supabase start
+supabase db reset
+supabase functions serve register-sale --env-file supabase/.env
+```
 
-## Deploy on Vercel
+Deploy da função:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+supabase functions deploy register-sale
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Desenvolvimento
+
+```bash
+npm install
+npm run dev
+```
+
+Enquanto o `.env.local` estiver vazio, a interface abre em modo demonstrativo para validar o fluxo do caixa sem depender do Supabase.
