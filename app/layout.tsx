@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sistema Arraia UFG",
-  description: "Sistema serverless para fichas, vendas e lucro da festa de arraia.",
+  title: "Arraiá Parafuso Solto - EMC UFG",
+  description: "Sistema para fichas, vendas e lucro do Arraiá Parafuso Solto - EMC UFG.",
 };
 
 export default function RootLayout({

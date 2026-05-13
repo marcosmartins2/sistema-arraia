@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f2e8;
-  --foreground: #171717;
+  --background: #f6f7fb;
+  --foreground: #17152f;
 }
 
 @theme inline {
@@ -19,6 +19,7 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
