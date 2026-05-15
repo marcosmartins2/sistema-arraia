@@ -1,15 +1,36 @@
 import type { Group, Product, RecentSale, SaleReport } from "@/types/database";
 
+export const demoOrganizationId = "arraia-parafuso-solto";
+
 export const demoGroups: Group[] = [
-  { id: "atlética", name: "Atlética UFG", acronym: "AA", color: "#c2410c" },
-  { id: "centro-academico", name: "Centro Acadêmico", acronym: "CA", color: "#047857" },
-  { id: "empresa-junior", name: "Empresa Júnior", acronym: "EJ", color: "#1d4ed8" },
+  {
+    id: "atletica",
+    organization_id: demoOrganizationId,
+    name: "Atletica UFG",
+    acronym: "AA",
+    color: "#2563eb",
+  },
+  {
+    id: "centro-academico",
+    organization_id: demoOrganizationId,
+    name: "Centro Academico",
+    acronym: "CA",
+    color: "#1d4ed8",
+  },
+  {
+    id: "empresa-junior",
+    organization_id: demoOrganizationId,
+    name: "Empresa Junior",
+    acronym: "EJ",
+    color: "#0b3a75",
+  },
 ];
 
 export const demoProducts: Product[] = [
   {
     id: "caldo",
-    group_id: "atlética",
+    organization_id: demoOrganizationId,
+    group_id: "atletica",
     name: "Caldo",
     category: "Comida",
     sale_price: 12,
@@ -20,6 +41,7 @@ export const demoProducts: Product[] = [
   },
   {
     id: "correio-elegante",
+    organization_id: demoOrganizationId,
     group_id: "centro-academico",
     name: "Correio elegante",
     category: "Brincadeira",
@@ -31,6 +53,7 @@ export const demoProducts: Product[] = [
   },
   {
     id: "refrigerante",
+    organization_id: demoOrganizationId,
     group_id: "empresa-junior",
     name: "Refrigerante",
     category: "Bebida",
@@ -42,7 +65,8 @@ export const demoProducts: Product[] = [
   },
   {
     id: "ficha-10",
-    group_id: "atlética",
+    organization_id: demoOrganizationId,
+    group_id: "atletica",
     name: "Ficha R$ 10",
     category: "Ficha",
     sale_price: 10,
@@ -54,6 +78,7 @@ export const demoProducts: Product[] = [
 ];
 
 export const demoReport: SaleReport = {
+  organization_id: demoOrganizationId,
   gross_revenue: 2860,
   total_cost: 1268,
   gross_profit: 1592,
@@ -66,6 +91,7 @@ export const demoReport: SaleReport = {
 export const demoRecentSales: RecentSale[] = [
   {
     id: "demo-1",
+    organization_id: demoOrganizationId,
     created_at: new Date().toISOString(),
     cashier_name: "Caixa 1",
     payment_method: "pix",
@@ -74,6 +100,7 @@ export const demoRecentSales: RecentSale[] = [
   },
   {
     id: "demo-2",
+    organization_id: demoOrganizationId,
     created_at: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
     cashier_name: "Caixa 2",
     payment_method: "cash",

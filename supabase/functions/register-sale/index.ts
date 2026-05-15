@@ -13,7 +13,7 @@ Deno.serve(async (request) => {
 
   if (request.method !== "POST") {
     return Response.json(
-      { error: "Método não permitido." },
+      { error: "Metodo nao permitido." },
       { status: 405, headers: corsHeaders },
     );
   }
@@ -24,7 +24,7 @@ Deno.serve(async (request) => {
 
     if (!supabaseUrl || !serviceRoleKey) {
       return Response.json(
-        { error: "SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórios." },
+        { error: "SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sao obrigatorios." },
         { status: 500, headers: corsHeaders },
       );
     }
@@ -33,8 +33,34 @@ Deno.serve(async (request) => {
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false },
     });
+    const authorization = request.headers.get("Authorization") ?? "";
+    const token = authorization.replace(/^Bearer\s+/i, "");
+    let actorUserId: string | null = null;
 
-    const { data, error } = await supabase.rpc("register_sale", { payload });
+    if (token) {
+      const { data: userResult, error: userError } = await supabase.auth.getUser(token);
+
+      if (userError || !userResult.user) {
+        return Response.json(
+          { error: "Sessao invalida." },
+          { status: 401, headers: corsHeaders },
+        );
+      }
+
+      actorUserId = userResult.user.id;
+    } else if (!payload.access_code) {
+      return Response.json(
+        { error: "Codigo de acesso ou sessao autenticada obrigatoria." },
+        { status: 401, headers: corsHeaders },
+      );
+    }
+
+    const { data, error } = await supabase.rpc("register_sale", {
+      payload: {
+        ...payload,
+        actor_user_id: actorUserId,
+      },
+    });
 
     if (error) {
       return Response.json(
@@ -46,7 +72,7 @@ Deno.serve(async (request) => {
     return Response.json({ sale_id: data }, { headers: corsHeaders });
   } catch {
     return Response.json(
-      { error: "Payload inválido." },
+      { error: "Payload invalido." },
       { status: 400, headers: corsHeaders },
     );
   }

@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f6f7fb;
-  --foreground: #17152f;
+  --background: #f5f8ff;
+  --foreground: #10233f;
 }
 
 @theme inline {
@@ -15,11 +15,16 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
 button,
 input,
 select {
   font: inherit;
+}
+
+::selection {
+  background: #bfdbfe;
+  color: #0b3a75;
 }

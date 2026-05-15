@@ -1,12 +1,50 @@
+export type AppRole = "admin" | "member";
+
+export type OrganizationRole = "owner" | "manager" | "member";
+
+export type Profile = {
+  id: string;
+  email: string | null;
+  full_name: string | null;
+  role: AppRole;
+};
+
+export type Organization = {
+  id: string;
+  name: string;
+  slug: string;
+  created_by: string | null;
+};
+
+export type OrganizationMember = {
+  organization_id: string;
+  user_id: string;
+  role: OrganizationRole;
+  organization?: Organization;
+  profile?: Profile;
+};
+
+export type OrganizationAccessCode = {
+  id: string;
+  organization_id: string;
+  code: string;
+  label: string | null;
+  is_active: boolean;
+  organization?: Organization;
+};
+
 export type Group = {
   id: string;
+  organization_id: string;
   name: string;
   acronym: string | null;
   color: string;
+  organization?: Organization;
 };
 
 export type Product = {
   id: string;
+  organization_id: string;
   group_id: string;
   name: string;
   category: string;
@@ -18,6 +56,7 @@ export type Product = {
 };
 
 export type SaleReport = {
+  organization_id?: string;
   gross_revenue: number;
   total_cost: number;
   gross_profit: number;
@@ -29,6 +68,7 @@ export type SaleReport = {
 
 export type RecentSale = {
   id: string;
+  organization_id?: string;
   created_at: string;
   cashier_name: string | null;
   payment_method: string;
