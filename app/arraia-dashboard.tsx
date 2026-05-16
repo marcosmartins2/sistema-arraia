@@ -8,6 +8,9 @@ import {
   BarChart3,
   Building2,
   CircleDollarSign,
+  Copy,
+  Eye,
+  EyeOff,
   LogOut,
   Mail,
   Minus,
@@ -19,8 +22,8 @@ import {
   ShieldCheck,
   ShoppingBasket,
   Ticket,
+  Trash2,
   UserRound,
-  Users,
   WalletCards,
 } from "lucide-react";
 import {
@@ -31,7 +34,6 @@ import {
   demoReport,
 } from "@/lib/demo-data";
 import {
-  adminUsersUrl,
   dashboardDataUrl,
   isSupabaseConfigured,
   registerSaleUrl,
@@ -41,7 +43,6 @@ import type {
   Group,
   Organization,
   OrganizationAccessCode,
-  OrganizationMember,
   Profile,
   Product,
   RecentSale,
@@ -80,23 +81,21 @@ const initialAuthForm = {
 const initialOrganizationForm = {
   name: "",
   slug: "",
-};
-
-const initialMemberForm = {
-  email: "",
-  organizationId: "",
-  role: "member",
-};
-
-const initialGroupForm = {
-  name: "",
-  acronym: "",
+  eventDate: "",
+  responsibleGroup: "",
 };
 
 const initialAccessCodeForm = {
   code: "",
   label: "",
   organizationId: "",
+};
+
+const officialAdmin = {
+  id: "official-admin",
+  email: "annalimonta@outlook.com",
+  password: "Manuela2811@",
+  fullName: "Admin oficial",
 };
 
 type DashboardView = "cashier" | "products" | "report" | "sales" | "admin";
@@ -132,20 +131,37 @@ function slugify(value: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+function generateAccessCode(existingCodes: OrganizationAccessCode[]) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const takenCodes = new Set(existingCodes.map((item) => item.code.toUpperCase()));
+
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const values = crypto.getRandomValues(new Uint8Array(8));
+    const code = Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+
+    if (!takenCodes.has(code)) {
+      return code;
+    }
+  }
+
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+}
+
 export default function ArraiaDashboard() {
   const [user, setUser] = useState<AppUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [memberships, setMemberships] = useState<OrganizationMember[]>([]);
   const [accessCodes, setAccessCodes] = useState<OrganizationAccessCode[]>([]);
-  const [adminProfiles, setAdminProfiles] = useState<Profile[]>([]);
   const [authMode, setAuthMode] = useState<AuthMode>("code");
   const [authForm, setAuthForm] = useState(initialAuthForm);
   const [accessCode, setAccessCode] = useState("");
   const [organizationForm, setOrganizationForm] = useState(initialOrganizationForm);
-  const [memberForm, setMemberForm] = useState(initialMemberForm);
-  const [groupForm, setGroupForm] = useState(initialGroupForm);
+  const [organizationCashiers, setOrganizationCashiers] = useState([""]);
   const [accessCodeForm, setAccessCodeForm] = useState(initialAccessCodeForm);
+  const [lastGeneratedAccessCode, setLastGeneratedAccessCode] = useState<{
+    code: string;
+    organizationId: string;
+  } | null>(null);
   const [groups, setGroups] = useState<Group[]>(demoGroups);
   const [products, setProducts] = useState<Product[]>(demoProducts);
   const [report, setReport] = useState<SaleReport>(demoReport);
@@ -160,19 +176,24 @@ export default function ArraiaDashboard() {
   const [status, setStatus] = useState(
     isSupabaseConfigured
       ? "Conectando ao Supabase..."
-      : "Modo demonstrativo: preencha o .env.local para usar dados reais.",
+      : "Entre com o código da festa ou acesse como admin.",
   );
   const [isAuthReady, setIsAuthReady] = useState(!isSupabaseConfigured);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingProduct, setIsCreatingProduct] = useState(false);
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
-  const [isAddingMember, setIsAddingMember] = useState(false);
-  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
-  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const isOfficialAdminSession = user?.id === officialAdmin.id;
 
   async function loadData({ announce = true } = {}) {
+    if (isOfficialAdminSession) {
+      if (announce) {
+        setStatus("Admin oficial conectado. Dados locais prontos para gerenciamento.");
+      }
+      return;
+    }
+
     if (accessCode) {
       await loadDataByAccessCode(accessCode, { announce });
       return;
@@ -184,31 +205,25 @@ export default function ArraiaDashboard() {
       setStatus("Atualizando dados...");
     }
 
-    const [profileResult, organizationsResult, membershipsResult] = await Promise.all([
+    const [profileResult, organizationsResult] = await Promise.all([
       supabase.from("profiles").select("*").maybeSingle(),
       supabase.from("organizations").select("*").order("name"),
-      supabase
-        .from("organization_members")
-        .select("*, organization:organizations(*), profile:profiles(*)")
-        .order("created_at", { ascending: false }),
     ]);
 
-    if (profileResult.error || organizationsResult.error || membershipsResult.error) {
-      setStatus("Nao foi possivel carregar as organizacoes. Confira as migrations e o login.");
+    if (profileResult.error || organizationsResult.error) {
+      setStatus("Não foi possível carregar as organizações. Confira as migrations e o login.");
       return;
     }
 
     const nextProfile = profileResult.data as Profile | null;
     const nextOrganizations = (organizationsResult.data ?? []) as Organization[];
-    const nextMemberships = (membershipsResult.data ?? []) as OrganizationMember[];
     const organizationId =
       nextOrganizations.find((organization) => organization.id === activeOrganizationId)?.id ??
       nextOrganizations[0]?.id;
 
     if (!organizationId) {
-      setStatus("Nenhuma organizacao disponivel para este usuario.");
+      setStatus("Nenhuma organização disponível para este usuário.");
       setOrganizations([]);
-      setMemberships([]);
       setGroups([]);
       setProducts([]);
       return;
@@ -216,33 +231,21 @@ export default function ArraiaDashboard() {
 
     setProfile(nextProfile);
     setOrganizations(nextOrganizations);
-    setMemberships(nextMemberships);
     setActiveOrganizationId(organizationId);
-    setMemberForm((current) => ({
-      ...current,
-      organizationId: current.organizationId || organizationId,
-    }));
     setAccessCodeForm((current) => ({
       ...current,
       organizationId: current.organizationId || organizationId,
     }));
 
     if (nextProfile?.role === "admin") {
-      const [profilesResult, codesResult] = await Promise.all([
-        supabase.from("profiles").select("*").order("email"),
-        supabase
-          .from("organization_access_codes")
-          .select("*, organization:organizations(*)")
-          .order("created_at", { ascending: false }),
-      ]);
-      if (!profilesResult.error) {
-        setAdminProfiles((profilesResult.data ?? []) as Profile[]);
-      }
+      const codesResult = await supabase
+        .from("organization_access_codes")
+        .select("*, organization:organizations(*)")
+        .order("created_at", { ascending: false });
       if (!codesResult.error) {
         setAccessCodes((codesResult.data ?? []) as OrganizationAccessCode[]);
       }
     } else {
-      setAdminProfiles([]);
       setAccessCodes([]);
     }
 
@@ -284,6 +287,26 @@ export default function ArraiaDashboard() {
 
     if (!normalizedCode) return;
 
+    const localCode = accessCodes.find(
+      (item) => item.code.toUpperCase() === normalizedCode && item.is_active,
+    );
+
+    if (localCode) {
+      const organization =
+        organizations.find((item) => item.id === localCode.organization_id) ??
+        localCode.organization;
+
+      if (organization) {
+        setOrganizations((current) =>
+          current.some((item) => item.id === organization.id) ? current : [organization, ...current],
+        );
+        setActiveOrganizationId(organization.id);
+      }
+
+      setStatus("Dados sincronizados pelo código local.");
+      return;
+    }
+
     if (announce) {
       setStatus("Atualizando dados...");
     }
@@ -303,7 +326,7 @@ export default function ArraiaDashboard() {
     const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
-      setStatus(payload?.error ?? "Nao foi possivel carregar os dados do codigo.");
+      setStatus(payload?.error ?? "Não foi possível carregar os dados do código.");
       return;
     }
 
@@ -314,7 +337,7 @@ export default function ArraiaDashboard() {
     setProducts((payload.products ?? []) as Product[]);
     setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
     setRecentSales((payload.recentSales ?? []) as RecentSale[]);
-    setStatus("Dados sincronizados pelo codigo.");
+    setStatus("Dados sincronizados pelo código.");
   }
 
   useEffect(() => {
@@ -333,7 +356,6 @@ export default function ArraiaDashboard() {
       if (!session?.user) {
         setProfile(null);
         setOrganizations([]);
-        setMemberships([]);
         setActiveView("cashier");
       }
       setIsAuthReady(true);
@@ -348,6 +370,7 @@ export default function ArraiaDashboard() {
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     if (!user) return;
+    if (user.id === officialAdmin.id) return;
 
     queueMicrotask(() => {
       void loadData({ announce: false });
@@ -357,6 +380,7 @@ export default function ArraiaDashboard() {
 
   useEffect(() => {
     if (!accessCode && !user) return;
+    if (user?.id === officialAdmin.id) return;
 
     const interval = window.setInterval(() => {
       void loadData({ announce: false });
@@ -366,16 +390,41 @@ export default function ArraiaDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessCode, user?.id, activeOrganizationId]);
 
+  const activeProducts = useMemo(() => {
+    if (!activeOrganizationId) return [];
+    return products.filter((product) => product.organization_id === activeOrganizationId);
+  }, [activeOrganizationId, products]);
+
   const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return products;
+    if (!term) return activeProducts;
 
-    return products.filter((product) =>
+    return activeProducts.filter((product) =>
       [product.name, product.category, product.group?.name, product.group?.acronym]
         .filter(Boolean)
         .some((value) => value!.toLowerCase().includes(term)),
     );
-  }, [products, searchTerm]);
+  }, [activeProducts, searchTerm]);
+
+  const activeRecentSales = useMemo(() => {
+    if (!activeOrganizationId) return [];
+    return recentSales.filter((sale) => sale.organization_id === activeOrganizationId);
+  }, [activeOrganizationId, recentSales]);
+
+  const activeReport =
+    report.organization_id === activeOrganizationId
+      ? report
+      : {
+          ...demoReport,
+          organization_id: activeOrganizationId,
+          gross_revenue: 0,
+          total_cost: 0,
+          gross_profit: 0,
+          total_expenses: 0,
+          net_profit: 0,
+          sales_count: 0,
+          items_sold: 0,
+        };
 
   const cartTotal = cart.reduce(
     (total, item) => total + item.quantity * item.product.sale_price,
@@ -391,6 +440,85 @@ export default function ArraiaDashboard() {
   );
   const activeLabel = visibleDashboardViews.find((view) => view.id === activeView)?.label ?? "Caixa";
   const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId);
+
+  function changeActiveOrganization(organizationId: string) {
+    setActiveOrganizationId(organizationId);
+    setCart([]);
+    setSearchTerm("");
+    const organization = organizations.find((item) => item.id === organizationId);
+    setStatus(
+      organization
+        ? `Visualizando dados da festa: ${organization.name}.`
+        : "Selecione uma festa para visualizar os dados.",
+    );
+  }
+
+  function updateOrganizationStatus(organizationId: string, isActive: boolean) {
+    setOrganizations((current) =>
+      current.map((organization) =>
+        organization.id === organizationId ? { ...organization, is_active: isActive } : organization,
+      ),
+    );
+    setAccessCodes((current) =>
+      current.map((code) =>
+        code.organization_id === organizationId ? { ...code, is_active: isActive } : code,
+      ),
+    );
+    if (!isActive && activeOrganizationId === organizationId) {
+      const nextActiveOrganization = organizations.find(
+        (organization) => organization.id !== organizationId && organization.is_active !== false,
+      );
+      setActiveOrganizationId(nextActiveOrganization?.id ?? "");
+      setCart([]);
+    }
+    setStatus(isActive ? "Festa ativada." : "Festa inativada.");
+  }
+
+  function deleteOrganization(organizationId: string) {
+    setOrganizations((current) => current.filter((organization) => organization.id !== organizationId));
+    setAccessCodes((current) => current.filter((code) => code.organization_id !== organizationId));
+    setProducts((current) => current.filter((product) => product.organization_id !== organizationId));
+    setRecentSales((current) => current.filter((sale) => sale.organization_id !== organizationId));
+    setLastGeneratedAccessCode((current) =>
+      current?.organizationId === organizationId ? null : current,
+    );
+
+    if (activeOrganizationId === organizationId) {
+      const nextActiveOrganization = organizations.find(
+        (organization) => organization.id !== organizationId && organization.is_active !== false,
+      );
+      setActiveOrganizationId(nextActiveOrganization?.id ?? "");
+      setCart([]);
+    }
+
+    setStatus("Festa excluída.");
+  }
+
+  function deleteAccessCode(codeId: string) {
+    const deletedCode = accessCodes.find((code) => code.id === codeId);
+    setAccessCodes((current) => current.filter((code) => code.id !== codeId));
+    setLastGeneratedAccessCode((current) =>
+      deletedCode && current?.code === deletedCode.code ? null : current,
+    );
+    setStatus("Código excluído.");
+  }
+
+  function deleteSystemAccount(accountId: string) {
+    if (accountId === officialAdmin.id) {
+      setStatus("A conta admin principal não pode ser excluída.");
+      return;
+    }
+
+    const organizationId = accountId.replace(/^group-/, "");
+    setOrganizations((current) =>
+      current.map((organization) =>
+        organization.id === organizationId
+          ? { ...organization, responsible_group: null }
+          : organization,
+      ),
+    );
+    setStatus("Conta de grupo removida.");
+  }
 
   function addToCart(product: Product) {
     setCart((current) => {
@@ -462,7 +590,7 @@ export default function ArraiaDashboard() {
       is_active: true,
     };
 
-    if (!isSupabaseConfigured || !supabase) {
+    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
       const product: Product = {
         id: crypto.randomUUID(),
         ...productPayload,
@@ -501,7 +629,7 @@ export default function ArraiaDashboard() {
   async function finishSale() {
     if (!cart.length) return;
 
-    if (!isSupabaseConfigured || !registerSaleUrl || !supabase) {
+    if (isOfficialAdminSession || !isSupabaseConfigured || !registerSaleUrl || !supabase) {
       const sale: RecentSale = {
         id: crypto.randomUUID(),
         organization_id: activeOrganizationId,
@@ -513,15 +641,33 @@ export default function ArraiaDashboard() {
       };
 
       setRecentSales((current) => [sale, ...current].slice(0, 12));
-      setReport((current) => ({
-        gross_revenue: current.gross_revenue + cartTotal,
-        total_cost: current.total_cost + (cartTotal - cartProfit),
-        gross_profit: current.gross_profit + cartProfit,
-        total_expenses: current.total_expenses,
-        net_profit: current.net_profit + cartProfit,
-        sales_count: current.sales_count + 1,
-        items_sold: current.items_sold + cart.reduce((sum, item) => sum + item.quantity, 0),
-      }));
+      setReport((current) => {
+        const base =
+          current.organization_id === activeOrganizationId
+            ? current
+            : {
+                ...demoReport,
+                organization_id: activeOrganizationId,
+                gross_revenue: 0,
+                total_cost: 0,
+                gross_profit: 0,
+                total_expenses: 0,
+                net_profit: 0,
+                sales_count: 0,
+                items_sold: 0,
+              };
+
+        return {
+          organization_id: activeOrganizationId,
+          gross_revenue: base.gross_revenue + cartTotal,
+          total_cost: base.total_cost + (cartTotal - cartProfit),
+          gross_profit: base.gross_profit + cartProfit,
+          total_expenses: base.total_expenses,
+          net_profit: base.net_profit + cartProfit,
+          sales_count: base.sales_count + 1,
+          items_sold: base.items_sold + cart.reduce((sum, item) => sum + item.quantity, 0),
+        };
+      });
       setProducts((current) =>
         current.map((product) => {
           const item = cart.find((draft) => draft.product.id === product.id);
@@ -543,7 +689,7 @@ export default function ArraiaDashboard() {
 
     if (!accessToken && !accessCode) {
       setIsSaving(false);
-      setStatus("Entre com o codigo da festa para registrar vendas.");
+      setStatus("Entre com o código da festa para registrar vendas.");
       return;
     }
 
@@ -589,7 +735,7 @@ export default function ArraiaDashboard() {
       const code = authForm.accessCode.trim().toUpperCase();
 
       if (!code) {
-        setStatus("Informe o codigo da festa.");
+        setStatus("Informe o código da festa.");
         return;
       }
 
@@ -607,7 +753,7 @@ export default function ArraiaDashboard() {
         ]);
         setActiveOrganizationId(demoOrganizationId);
         setAuthForm(initialAuthForm);
-        setStatus("Codigo aceito no modo demonstrativo.");
+        setStatus("Código aceito no modo demonstrativo.");
         return;
       }
 
@@ -623,7 +769,7 @@ export default function ArraiaDashboard() {
       setIsSubmittingAuth(false);
 
       if (!response.ok) {
-        setStatus(payload?.error ?? "Codigo invalido.");
+        setStatus(payload?.error ?? "Código inválido.");
         return;
       }
 
@@ -638,12 +784,7 @@ export default function ArraiaDashboard() {
       setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
       setRecentSales((payload.recentSales ?? []) as RecentSale[]);
       setAuthForm(initialAuthForm);
-      setStatus("Codigo aceito. Dados sincronizados.");
-      return;
-    }
-
-    if (!supabase) {
-      setStatus("Login admin real precisa do Supabase configurado.");
+      setStatus("Código aceito. Dados sincronizados.");
       return;
     }
 
@@ -655,26 +796,46 @@ export default function ArraiaDashboard() {
       return;
     }
 
-    setIsSubmittingAuth(true);
-    setStatus(authMode === "sign-in" ? "Entrando..." : "Criando conta...");
-
-    const result = await supabase.auth.signInWithPassword({ email, password });
-
-    setIsSubmittingAuth(false);
-
-    if (result.error) {
-      setStatus(result.error.message);
+    if (
+      email.toLowerCase() !== officialAdmin.email ||
+      password !== officialAdmin.password
+    ) {
+      setStatus("Email ou senha de admin inválido. Use somente o admin oficial.");
       return;
     }
 
+    const adminProfile: Profile = {
+      id: officialAdmin.id,
+      email: officialAdmin.email,
+      full_name: officialAdmin.fullName,
+      role: "admin",
+    };
+
+    setIsSubmittingAuth(true);
+    setStatus("Entrando como admin oficial...");
+    setIsSubmittingAuth(false);
+
+    setAccessCode("");
+    setUser({ id: officialAdmin.id, email: officialAdmin.email });
+    setProfile(adminProfile);
+    setOrganizations([]);
+    setAccessCodes([]);
+    setActiveOrganizationId("");
+    setAccessCodeForm((current) => ({ ...current, organizationId: "" }));
+    setGroups((current) => (current.length ? current : demoGroups));
+    setProducts((current) => (current.length ? current : demoProducts));
+    setReport((current) => current ?? demoReport);
+    setRecentSales((current) => (current.length ? current : demoRecentSales));
+    setActiveView("admin");
     setAuthForm(initialAuthForm);
-    setStatus("Login realizado.");
+    setStatus("Admin oficial conectado. Você pode criar festas, códigos e gerenciar usuários.");
   }
 
   async function signOut() {
     setAuthMode("sign-in");
     setAuthForm(initialAuthForm);
     setAccessCode("");
+    setOrganizationCashiers([""]);
 
     if (supabase) {
       await supabase.auth.signOut();
@@ -683,14 +844,13 @@ export default function ArraiaDashboard() {
     setUser(null);
     setProfile(null);
     setOrganizations([]);
-    setMemberships([]);
     setProducts(demoProducts);
     setGroups(demoGroups);
     setReport(demoReport);
     setRecentSales(demoRecentSales);
     setActiveView("cashier");
     setIsAuthReady(true);
-    setStatus("Sessao encerrada.");
+    setStatus("Sessão encerrada.");
   }
 
   async function createOrganization(event: FormEvent<HTMLFormElement>) {
@@ -699,25 +859,37 @@ export default function ArraiaDashboard() {
 
     const name = organizationForm.name.trim();
     const slug = slugify(organizationForm.slug || name);
+    const eventDate = organizationForm.eventDate || null;
+    const responsibleGroup = organizationForm.responsibleGroup.trim() || null;
+    const cashierNames = organizationCashiers.map((item) => item.trim()).filter(Boolean);
 
     if (!name || !slug) {
-      setStatus("Informe nome e identificador da organizacao.");
+      setStatus("Informe nome e sigla da festa.");
       return;
     }
 
-    if (!supabase) {
+    if (!eventDate || !responsibleGroup || cashierNames.length === 0) {
+      setStatus("Informe data, responsáveis e pelo menos um vendedor do caixa.");
+      return;
+    }
+
+    if (isOfficialAdminSession || !supabase) {
       const organization: Organization = {
         id: crypto.randomUUID(),
         name,
         slug,
         created_by: user?.id ?? null,
+        event_date: eventDate,
+        responsible_group: responsibleGroup,
+        cashier_names: cashierNames,
+        is_active: true,
       };
       setOrganizations((current) => [...current, organization].sort((a, b) => a.name.localeCompare(b.name)));
       setOrganizationForm(initialOrganizationForm);
+      setOrganizationCashiers([""]);
       setActiveOrganizationId(organization.id);
-      setMemberForm((current) => ({ ...current, organizationId: organization.id }));
       setAccessCodeForm((current) => ({ ...current, organizationId: organization.id }));
-      setStatus("Organizacao criada no modo demonstrativo.");
+      setStatus("Organização criada no modo demonstrativo.");
       return;
     }
 
@@ -735,139 +907,54 @@ export default function ArraiaDashboard() {
     }
 
     setOrganizationForm(initialOrganizationForm);
+    setOrganizationCashiers([""]);
     setActiveOrganizationId((result.data as Organization).id);
     await loadData();
-    setStatus("Organizacao criada.");
-  }
-
-  async function addMember(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (profile?.role !== "admin") return;
-
-    const email = memberForm.email.trim().toLowerCase();
-    const organizationId = memberForm.organizationId || activeOrganizationId;
-    const role = memberForm.role as OrganizationMember["role"];
-
-    if (!email || !organizationId) {
-      setStatus("Informe email e organizacao.");
-      return;
-    }
-
-    const targetProfile = adminProfiles.find((item) => item.email?.toLowerCase() === email);
-
-    if (!targetProfile) {
-      setStatus("Usuario nao encontrado. Ele precisa criar a conta antes de virar membro.");
-      return;
-    }
-
-    if (!supabase) {
-      const organization = organizations.find((item) => item.id === organizationId);
-      setMemberships((current) => [
-        {
-          organization_id: organizationId,
-          user_id: targetProfile.id,
-          role,
-          organization,
-          profile: targetProfile,
-        },
-        ...current.filter(
-          (item) => !(item.organization_id === organizationId && item.user_id === targetProfile.id),
-        ),
-      ]);
-      setMemberForm((current) => ({ ...initialMemberForm, organizationId: current.organizationId }));
-      setStatus("Membro vinculado no modo demonstrativo.");
-      return;
-    }
-
-    setIsAddingMember(true);
-    const result = await supabase
-      .from("organization_members")
-      .upsert({ organization_id: organizationId, user_id: targetProfile.id, role });
-    setIsAddingMember(false);
-
-    if (result.error) {
-      setStatus(result.error.message);
-      return;
-    }
-
-    setMemberForm((current) => ({ ...initialMemberForm, organizationId: current.organizationId }));
-    await loadData();
-    setStatus("Membro vinculado a organizacao.");
-  }
-
-  async function createGroup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const name = groupForm.name.trim();
-    const acronym = groupForm.acronym.trim().toUpperCase();
-
-    if (!name) {
-      setStatus("Informe o nome do grupo.");
-      return;
-    }
-
-    if (!supabase) {
-      const group: Group = {
-        id: crypto.randomUUID(),
-        organization_id: activeOrganizationId,
-        name,
-        acronym: acronym || null,
-        color: "#2563eb",
-      };
-      setGroups((current) => [...current, group].sort((a, b) => a.name.localeCompare(b.name)));
-      setGroupForm(initialGroupForm);
-      setStatus("Grupo criado no modo demonstrativo.");
-      return;
-    }
-
-    setIsCreatingGroup(true);
-    const result = await supabase
-      .from("groups")
-      .insert({
-        organization_id: activeOrganizationId,
-        name,
-        acronym: acronym || null,
-        color: "#2563eb",
-      });
-    setIsCreatingGroup(false);
-
-    if (result.error) {
-      setStatus(result.error.message);
-      return;
-    }
-
-    setGroupForm(initialGroupForm);
-    await loadData();
-    setStatus("Grupo criado na organizacao.");
+    setStatus("Organização criada.");
   }
 
   async function createAccessCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (profile?.role !== "admin") return;
 
-    const code = accessCodeForm.code.trim().toUpperCase();
     const organizationId = accessCodeForm.organizationId || activeOrganizationId;
+    const organization = organizations.find((item) => item.id === organizationId);
+    const existingCodeForOrganization = accessCodes.find(
+      (item) => item.organization_id === organizationId && item.is_active,
+    );
 
-    if (!code || !organizationId) {
-      setStatus("Informe o codigo e a organizacao.");
+    if (!organizationId || !organization) {
+      setStatus("Selecione a festa para gerar o código.");
       return;
     }
 
-    if (!supabase) {
-      const organization = organizations.find((item) => item.id === organizationId);
+    if (existingCodeForOrganization) {
+      setLastGeneratedAccessCode({
+        code: existingCodeForOrganization.code,
+        organizationId,
+      });
+      setStatus(`Esta festa já tem um código ativo: ${existingCodeForOrganization.code}.`);
+      return;
+    }
+
+    const code = generateAccessCode(accessCodes);
+    const label = organization.slug.toUpperCase();
+
+    if (isOfficialAdminSession || !supabase) {
       setAccessCodes((current) => [
         {
           id: crypto.randomUUID(),
           organization_id: organizationId,
           code,
-          label: accessCodeForm.label.trim() || null,
+          label,
           is_active: true,
           organization,
         },
-        ...current.filter((item) => item.code !== code),
+        ...current,
       ]);
-      setAccessCodeForm((current) => ({ ...initialAccessCodeForm, organizationId: current.organizationId }));
-      setStatus("Codigo criado no modo demonstrativo.");
+      setLastGeneratedAccessCode({ code, organizationId });
+      setAccessCodeForm(initialAccessCodeForm);
+      setStatus(`Código único gerado para ${organization.name}: ${code}.`);
       return;
     }
 
@@ -875,7 +962,7 @@ export default function ArraiaDashboard() {
     const result = await supabase.from("organization_access_codes").upsert({
       organization_id: organizationId,
       code,
-      label: accessCodeForm.label.trim() || null,
+      label,
       is_active: true,
       created_by: user?.id ?? null,
     });
@@ -886,77 +973,17 @@ export default function ArraiaDashboard() {
       return;
     }
 
-    setAccessCodeForm((current) => ({ ...initialAccessCodeForm, organizationId: current.organizationId }));
+    setAccessCodeForm(initialAccessCodeForm);
+    setLastGeneratedAccessCode({ code, organizationId });
     await loadData();
-    setStatus("Codigo de acesso criado.");
-  }
-
-  async function callAdminUsers(payload: Record<string, unknown>) {
-    if (!supabase || !adminUsersUrl) {
-      throw new Error("Funcao admin-users nao configurada.");
-    }
-
-    const sessionResult = await supabase.auth.getSession();
-    const accessToken = sessionResult.data.session?.access_token;
-
-    if (!accessToken) {
-      throw new Error("Faca login novamente para continuar.");
-    }
-
-    const response = await fetch(adminUsersUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      throw new Error(result?.error ?? "Falha na operacao administrativa.");
-    }
-
-    return result;
-  }
-
-  async function deleteAccount(userId: string) {
-    if (profile?.role !== "admin") return;
-
-    if (!supabase) {
-      if (userId === user?.id) {
-        setStatus("Voce nao pode excluir sua propria conta por aqui.");
-        return;
-      }
-
-      setAdminProfiles((current) => current.filter((item) => item.id !== userId));
-      setMemberships((current) => current.filter((item) => item.user_id !== userId));
-      setStatus("Conta excluida no modo demonstrativo.");
-      return;
-    }
-
-    setDeletingUserId(userId);
-    setStatus("Excluindo conta...");
-
-    try {
-      await callAdminUsers({
-        action: "delete_user",
-        user_id: userId,
-      });
-      await loadData();
-      setStatus("Conta excluida.");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Falha ao excluir conta.");
-    } finally {
-      setDeletingUserId(null);
-    }
+    setStatus(`Código único gerado para ${organization.name}: ${code}.`);
   }
 
   if (isSupabaseConfigured && !isAuthReady) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f5f8ff] px-4 text-[#10233f]">
         <div className="rounded-md border border-[#d7e3f8] bg-white px-5 py-4 text-sm font-semibold text-slate-600 shadow-sm shadow-[#0b3a75]/5">
-          Carregando sessao...
+          Carregando sessão...
         </div>
       </main>
     );
@@ -977,7 +1004,7 @@ export default function ArraiaDashboard() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5f8ff] text-[#10233f] md:flex">
+    <main className="min-h-screen overflow-x-hidden bg-[#f5f8ff] text-[#10233f] md:flex">
       <aside className="hidden w-[74px] shrink-0 bg-[#071a36] text-white md:flex md:flex-col md:items-center">
         <div className="flex h-[72px] w-full items-center justify-center border-b border-white/10 bg-[#05142b]">
           <BrandMark compact />
@@ -1003,30 +1030,35 @@ export default function ArraiaDashboard() {
 
       <div className="min-w-0 flex-1">
         <header className="border-b border-[#d7e3f8] bg-white">
-          <div className="flex min-h-[72px] flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
-            <div className="flex items-center gap-3">
+          <div className="flex min-h-[72px] flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:px-6">
+            <div className="flex min-w-0 items-center gap-3">
               <div className="md:hidden">
                 <BrandMark compact />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <BrandMark />
                   <p className="sr-only">
-                    Arraiá Parafuso Solto - EMC UFG
+                    Sistema Arraiá
                   </p>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">{status}</p>
+                <p className="mt-1 line-clamp-2 text-xs text-slate-500 sm:line-clamp-none">
+                  {activeOrganization ? activeOrganization.name : status}
+                </p>
               </div>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:flex-wrap sm:items-center lg:w-auto lg:justify-end">
               {organizations.length > 0 && (
                 <select
                   value={activeOrganizationId}
-                  onChange={(event) => setActiveOrganizationId(event.target.value)}
-                  className="h-9 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-                  aria-label="Organizacao ativa"
+                  onChange={(event) => changeActiveOrganization(event.target.value)}
+                  className="col-span-2 h-9 min-w-0 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 sm:w-56"
+                  aria-label="Festa selecionada"
                 >
-                  {organizations.map((organization) => (
+                  <option value="">Selecione a festa</option>
+                  {organizations
+                    .filter((organization) => organization.is_active !== false)
+                    .map((organization) => (
                     <option key={organization.id} value={organization.id}>
                       {organization.name}
                     </option>
@@ -1037,7 +1069,7 @@ export default function ArraiaDashboard() {
               <input
                 value={cashierName}
                 onChange={(event) => setCashierName(event.target.value)}
-                className="h-9 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                className="h-9 min-w-0 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 sm:w-32"
                 aria-label="Nome do caixa"
               />
               <button
@@ -1063,7 +1095,7 @@ export default function ArraiaDashboard() {
             </div>
           </div>
 
-          <div className="bg-[#0b3a75] px-4 py-3 text-white lg:px-6">
+          <div className="bg-[#0b3a75] px-3 py-3 text-white sm:px-4 lg:px-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase text-white/70">Módulo ativo</p>
@@ -1076,7 +1108,7 @@ export default function ArraiaDashboard() {
             </div>
           </div>
 
-          <nav className="flex gap-1 overflow-x-auto bg-white px-4 pt-3 lg:px-6" aria-label="Áreas do sistema">
+          <nav className="flex gap-1 overflow-x-auto bg-white px-3 pt-3 sm:px-4 lg:px-6" aria-label="Áreas do sistema">
             {visibleDashboardViews.map((view) => (
               <button
                 key={view.id}
@@ -1095,7 +1127,7 @@ export default function ArraiaDashboard() {
           </nav>
         </header>
 
-        <div className="px-4 py-5 lg:px-6">
+        <div className="px-3 py-4 sm:px-4 sm:py-5 lg:px-6">
           {activeView === "cashier" && (
             <div className="grid gap-5 xl:grid-cols-[1fr_380px]">
               <section className="space-y-4">
@@ -1132,22 +1164,22 @@ export default function ArraiaDashboard() {
           {activeView === "report" && (
             <section className="space-y-5">
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <Metric icon={<Banknote size={18} />} label="Receita" value={currency.format(report.gross_revenue)} />
-                <Metric icon={<WalletCards size={18} />} label="Custo dos produtos" value={currency.format(report.total_cost)} />
-                <Metric icon={<BarChart3 size={18} />} label="Lucro líquido" value={currency.format(report.gross_profit)} />
-                <Metric icon={<Ticket size={18} />} label="Itens vendidos" value={String(report.items_sold)} />
+                <Metric icon={<Banknote size={18} />} label="Receita" value={currency.format(activeReport.gross_revenue)} />
+                <Metric icon={<WalletCards size={18} />} label="Custo dos produtos" value={currency.format(activeReport.total_cost)} />
+                <Metric icon={<BarChart3 size={18} />} label="Lucro líquido" value={currency.format(activeReport.gross_profit)} />
+                <Metric icon={<Ticket size={18} />} label="Itens vendidos" value={String(activeReport.items_sold)} />
               </div>
               <div className="grid gap-4 md:grid-cols-3">
-                <Metric icon={<ReceiptText size={18} />} label="Vendas registradas" value={String(report.sales_count)} />
+                <Metric icon={<ReceiptText size={18} />} label="Vendas registradas" value={String(activeReport.sales_count)} />
                 <Metric
                   icon={<CircleDollarSign size={18} />}
                   label="Ticket médio"
-                  value={currency.format(report.sales_count ? report.gross_revenue / report.sales_count : 0)}
+                  value={currency.format(activeReport.sales_count ? activeReport.gross_revenue / activeReport.sales_count : 0)}
                 />
                 <Metric
                   icon={<BarChart3 size={18} />}
                   label="Lucro médio por item"
-                  value={currency.format(report.items_sold ? report.gross_profit / report.items_sold : 0)}
+                  value={currency.format(activeReport.items_sold ? activeReport.gross_profit / activeReport.items_sold : 0)}
                 />
               </div>
             </section>
@@ -1168,7 +1200,7 @@ export default function ArraiaDashboard() {
                   </button>
                 }
               />
-              <SalesList sales={recentSales} />
+              <SalesList sales={activeRecentSales} />
             </section>
           )}
 
@@ -1177,29 +1209,33 @@ export default function ArraiaDashboard() {
               accessCodeForm={accessCodeForm}
               accessCodes={accessCodes}
               activeOrganizationId={activeOrganizationId}
-              currentUserId={user?.id ?? ""}
-              deletingUserId={deletingUserId}
-              groupForm={groupForm}
-              isAddingMember={isAddingMember}
               isCreatingAccessCode={isCreatingAccessCode}
-              isCreatingGroup={isCreatingGroup}
               isCreatingOrganization={isCreatingOrganization}
-              memberForm={memberForm}
-              memberships={memberships}
+              lastGeneratedAccessCode={lastGeneratedAccessCode}
+              organizationCashiers={organizationCashiers}
               organizationForm={organizationForm}
               organizations={organizations}
-              profiles={adminProfiles}
-              onAddMember={addMember}
               onChangeAccessCodeForm={(field, value) => setAccessCodeForm((current) => ({ ...current, [field]: value }))}
-              onChangeGroupForm={(field, value) => setGroupForm((current) => ({ ...current, [field]: value }))}
-              onChangeMemberForm={(field, value) => setMemberForm((current) => ({ ...current, [field]: value }))}
               onChangeOrganizationForm={(field, value) =>
                 setOrganizationForm((current) => ({ ...current, [field]: value }))
               }
+              onAddOrganizationCashier={() => setOrganizationCashiers((current) => [...current, ""])}
+              onChangeOrganizationCashier={(index, value) =>
+                setOrganizationCashiers((current) =>
+                  current.map((item, itemIndex) => (itemIndex === index ? value : item)),
+                )
+              }
               onCreateAccessCode={createAccessCode}
-              onCreateGroup={createGroup}
               onCreateOrganization={createOrganization}
-              onDeleteAccount={deleteAccount}
+              onDeleteAccessCode={deleteAccessCode}
+              onDeleteOrganization={deleteOrganization}
+              onDeleteSystemAccount={deleteSystemAccount}
+              onUpdateOrganizationStatus={updateOrganizationStatus}
+              onRemoveOrganizationCashier={(index) =>
+                setOrganizationCashiers((current) =>
+                  current.length === 1 ? current : current.filter((_, itemIndex) => itemIndex !== index),
+                )
+              }
             />
           )}
         </div>
@@ -1220,7 +1256,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center">
       <p className="text-sm font-black uppercase tracking-normal text-[#0b3a75] sm:text-base">
-        Arraia Parafuso Solto
+        Sistema Arraiá
       </p>
     </div>
   );
@@ -1244,6 +1280,7 @@ function AuthScreen({
   status: string;
 }) {
   const isCodeMode = authMode === "code";
+  const [showPassword, setShowPassword] = useState(false);
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#050b1f] text-white">
@@ -1255,32 +1292,32 @@ function AuthScreen({
         sizes="100vw"
         className="object-cover object-left opacity-82 lg:-translate-x-[34%] lg:-translate-y-[4%] lg:scale-125"
       />
-      <div className="absolute inset-0 bg-[#050b1f]/28" />
-      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,11,31,0.08)_0%,rgba(5,11,31,0.22)_36%,rgba(5,11,31,0.84)_62%,#050b1f_100%)]" />
+      <div className="absolute inset-0 bg-[#050b1f]/48 lg:bg-[#050b1f]/28" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,11,31,0.22)_0%,rgba(5,11,31,0.82)_58%,#050b1f_100%)] lg:bg-[linear-gradient(90deg,rgba(5,11,31,0.08)_0%,rgba(5,11,31,0.22)_36%,rgba(5,11,31,0.84)_62%,#050b1f_100%)]" />
 
-      <section className="relative z-10 flex min-h-screen items-center px-4 py-8 sm:px-8 lg:px-12">
-        <div className="grid w-full max-w-6xl gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
+      <section className="relative z-10 flex min-h-screen items-center px-3 py-6 sm:px-8 lg:px-12">
+        <div className="mx-auto grid w-full max-w-6xl gap-8 lg:grid-cols-[1fr_minmax(360px,420px)] lg:items-center">
           <div className="hidden max-w-2xl lg:block">
-            <p className="text-sm font-bold uppercase tracking-normal text-[#93c5fd]">
-              Gestao de vendas
+            <p className="font-[family-name:var(--font-display)] text-sm font-bold uppercase tracking-normal text-[#93c5fd]">
+              Gestão de vendas
             </p>
-            <h1 className="mt-3 max-w-xl text-5xl font-black leading-tight tracking-normal text-white">
-              Gerencie vendas, produtos e relatorios.
+            <h1 className="mt-3 max-w-xl font-[family-name:var(--font-display)] text-4xl font-extrabold leading-[1.18] tracking-normal text-white xl:text-5xl">
+              O controle total do seu evento na palma da mão.
             </h1>
-            <p className="mt-4 max-w-lg text-base leading-7 text-blue-100/72">
-              Acompanhe o caixa em tempo real, organize produtos por grupo e consulte os resultados da festa em um painel unico.
+            <p className="mt-5 max-w-xl font-[family-name:var(--font-display)] text-base font-medium leading-8 text-blue-100/78">
+              Monitore o caixa em tempo real, gerencie estoques e tenha relatórios precisos sem complicação. Transforme a gestão da sua festa em uma experiência profissional.
             </p>
           </div>
-          <div className="w-full rounded-md border border-white/16 bg-white/10 p-5 shadow-2xl shadow-black/25 backdrop-blur-xl">
-            <div className="flex items-center gap-3 border-b border-white/12 pb-4">
+          <div className="w-full rounded-md border border-white/16 bg-white/10 p-4 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-5">
+            <div className="flex min-w-0 items-center gap-3 border-b border-white/12 pb-4">
               <div className="flex h-11 w-11 items-center justify-center rounded-md bg-[#7c3aed] text-white shadow-lg shadow-[#7c3aed]/30">
                 <ShoppingBasket size={23} strokeWidth={2.4} />
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm font-black uppercase tracking-normal text-white">
                   Arraia Parafuso Solto
                 </p>
-                <p className="mt-1 text-sm text-blue-100/70">{status}</p>
+                <p className="mt-1 line-clamp-2 text-sm text-blue-100/70">{status}</p>
               </div>
             </div>
 
@@ -1292,7 +1329,7 @@ function AuthScreen({
               isCodeMode ? "bg-white text-[#172554] shadow-sm" : "text-blue-100/70 hover:text-white"
             }`}
           >
-            Codigo
+            Código
           </button>
           <button
             type="button"
@@ -1310,7 +1347,7 @@ function AuthScreen({
             <input
               value={authForm.accessCode}
               onChange={(event) => onChangeForm("accessCode", event.target.value)}
-              placeholder="Codigo da festa"
+              placeholder="Código da festa"
               className="h-11 w-full rounded-md border border-white/12 bg-white/10 px-3 text-sm text-white outline-none transition placeholder:text-blue-100/45 focus:border-[#a78bfa] focus:ring-2 focus:ring-[#a78bfa]/20"
             />
           ) : (
@@ -1327,13 +1364,24 @@ function AuthScreen({
                   className="h-full min-w-0 flex-1 bg-transparent pr-3 text-sm text-white outline-none placeholder:text-blue-100/45"
                 />
               </label>
-              <input
-                value={authForm.password}
-                onChange={(event) => onChangeForm("password", event.target.value)}
-                placeholder="Senha"
-                type="password"
-                className="h-11 w-full rounded-md border border-white/12 bg-white/10 px-3 text-sm text-white outline-none transition placeholder:text-blue-100/45 focus:border-[#a78bfa] focus:ring-2 focus:ring-[#a78bfa]/20"
-              />
+              <label className="flex h-11 items-center rounded-md border border-white/12 bg-white/10 text-blue-100/60 transition focus-within:border-[#a78bfa] focus-within:ring-2 focus-within:ring-[#a78bfa]/20">
+                <input
+                  value={authForm.password}
+                  onChange={(event) => onChangeForm("password", event.target.value)}
+                  placeholder="Senha"
+                  type={showPassword ? "text" : "password"}
+                  className="h-full min-w-0 flex-1 bg-transparent px-3 text-sm text-white outline-none placeholder:text-blue-100/45"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  className="flex h-full w-11 items-center justify-center rounded-r-md text-blue-100/70 transition hover:bg-white/10 hover:text-white"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </label>
             </>
           )}
           <button
@@ -1341,7 +1389,7 @@ function AuthScreen({
             disabled={isSubmitting}
             className="flex h-12 w-full items-center justify-center rounded-md bg-[#7c3aed] px-4 text-sm font-bold text-white shadow-lg shadow-[#7c3aed]/25 transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:bg-slate-500"
           >
-            {isSubmitting ? "Aguarde..." : isCodeMode ? "Entrar com codigo" : "Entrar como admin"}
+            {isSubmitting ? "Aguarde..." : isCodeMode ? "Entrar com código" : "Entrar como admin"}
           </button>
         </form>
       </div>
@@ -1355,195 +1403,241 @@ function AdminPanel({
   accessCodeForm,
   accessCodes,
   activeOrganizationId,
-  currentUserId,
-  deletingUserId,
-  groupForm,
-  isAddingMember,
   isCreatingAccessCode,
-  isCreatingGroup,
   isCreatingOrganization,
-  memberForm,
-  memberships,
-  onAddMember,
+  lastGeneratedAccessCode,
+  organizationCashiers,
+  onAddOrganizationCashier,
   onChangeAccessCodeForm,
-  onChangeGroupForm,
-  onChangeMemberForm,
+  onChangeOrganizationCashier,
   onChangeOrganizationForm,
   onCreateAccessCode,
-  onCreateGroup,
   onCreateOrganization,
-  onDeleteAccount,
+  onDeleteAccessCode,
+  onDeleteOrganization,
+  onDeleteSystemAccount,
+  onUpdateOrganizationStatus,
+  onRemoveOrganizationCashier,
   organizationForm,
   organizations,
-  profiles,
 }: {
   accessCodeForm: typeof initialAccessCodeForm;
   accessCodes: OrganizationAccessCode[];
   activeOrganizationId: string;
-  currentUserId: string;
-  deletingUserId: string | null;
-  groupForm: typeof initialGroupForm;
-  isAddingMember: boolean;
   isCreatingAccessCode: boolean;
-  isCreatingGroup: boolean;
   isCreatingOrganization: boolean;
-  memberForm: typeof initialMemberForm;
-  memberships: OrganizationMember[];
-  onAddMember: (event: FormEvent<HTMLFormElement>) => void;
+  lastGeneratedAccessCode: { code: string; organizationId: string } | null;
+  organizationCashiers: string[];
+  onAddOrganizationCashier: () => void;
   onChangeAccessCodeForm: (field: keyof typeof initialAccessCodeForm, value: string) => void;
-  onChangeGroupForm: (field: keyof typeof initialGroupForm, value: string) => void;
-  onChangeMemberForm: (field: keyof typeof initialMemberForm, value: string) => void;
+  onChangeOrganizationCashier: (index: number, value: string) => void;
   onChangeOrganizationForm: (field: keyof typeof initialOrganizationForm, value: string) => void;
   onCreateAccessCode: (event: FormEvent<HTMLFormElement>) => void;
-  onCreateGroup: (event: FormEvent<HTMLFormElement>) => void;
   onCreateOrganization: (event: FormEvent<HTMLFormElement>) => void;
-  onDeleteAccount: (userId: string) => void;
+  onDeleteAccessCode: (codeId: string) => void;
+  onDeleteOrganization: (organizationId: string) => void;
+  onDeleteSystemAccount: (accountId: string) => void;
+  onUpdateOrganizationStatus: (organizationId: string, isActive: boolean) => void;
+  onRemoveOrganizationCashier: (index: number) => void;
   organizationForm: typeof initialOrganizationForm;
   organizations: Organization[];
-  profiles: Profile[];
 }) {
+  const [copiedAccessCode, setCopiedAccessCode] = useState(false);
+  const selectedAccessCodeOrganization = organizations.find(
+    (organization) => organization.id === (accessCodeForm.organizationId || activeOrganizationId),
+  );
+  const selectedExistingAccessCode = accessCodes.find(
+    (item) => item.organization_id === selectedAccessCodeOrganization?.id && item.is_active,
+  );
+  const organizationsWithoutAccessCode = organizations.filter(
+    (organization) =>
+      organization.is_active !== false &&
+      !accessCodes.some((item) => item.organization_id === organization.id && item.is_active),
+  );
+  const visibleAccessCode =
+    lastGeneratedAccessCode && lastGeneratedAccessCode.organizationId === selectedAccessCodeOrganization?.id
+      ? lastGeneratedAccessCode.code
+      : selectedExistingAccessCode?.code;
+  const systemAccounts = [
+    {
+      id: officialAdmin.id,
+      name: "Anna Carolina Limonta",
+      detail: officialAdmin.email,
+      role: "Admin / Owner",
+      isActive: true,
+    },
+    ...organizations
+      .filter((organization) => organization.responsible_group?.trim())
+      .map((organization) => ({
+        id: `group-${organization.id}`,
+        name: organization.name,
+        detail: organization.name,
+        role: organization.responsible_group!,
+        isActive:
+          organization.is_active !== false &&
+          accessCodes.some((code) => code.organization_id === organization.id && code.is_active),
+      })),
+  ];
+
+  async function copyAccessCode() {
+    if (!visibleAccessCode) return;
+
+    await navigator.clipboard.writeText(visibleAccessCode);
+    setCopiedAccessCode(true);
+    window.setTimeout(() => setCopiedAccessCode(false), 1600);
+  }
+
+  async function copyCodeValue(code: string) {
+    await navigator.clipboard.writeText(code);
+    setCopiedAccessCode(true);
+    window.setTimeout(() => setCopiedAccessCode(false), 1600);
+  }
+
   return (
     <section className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-4">
-        <form onSubmit={onCreateAccessCode} className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
-          <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
-            <ShieldCheck size={17} />
-            Codigos de acesso
-          </div>
-          <div className="mt-4 space-y-3">
-            <input
-              value={accessCodeForm.code}
-              onChange={(event) => onChangeAccessCodeForm("code", event.target.value)}
-              placeholder="Codigo da festa"
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            />
-            <input
-              value={accessCodeForm.label}
-              onChange={(event) => onChangeAccessCodeForm("label", event.target.value)}
-              placeholder="Descricao"
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            />
-            <select
-              value={accessCodeForm.organizationId || activeOrganizationId}
-              onChange={(event) => onChangeAccessCodeForm("organizationId", event.target.value)}
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            >
-              {organizations.map((organization) => (
-                <option key={organization.id} value={organization.id}>
-                  {organization.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              disabled={isCreatingAccessCode}
-              className="h-10 w-full rounded-md bg-[#2563eb] text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              {isCreatingAccessCode ? "Criando..." : "Criar codigo"}
-            </button>
-          </div>
-        </form>
-
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,0.9fr)]">
         <form onSubmit={onCreateOrganization} className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
           <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
             <Building2 size={17} />
-            Organizacoes
+            Criar festa
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <input
               value={organizationForm.name}
               onChange={(event) => onChangeOrganizationForm("name", event.target.value)}
-              placeholder="Nome da organizacao"
+              placeholder="Nome da festa"
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             />
             <input
+              value={organizationForm.eventDate}
+              onChange={(event) => onChangeOrganizationForm("eventDate", event.target.value)}
+              type="date"
+              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+              aria-label="Data da festa"
+            />
+            <input
               value={organizationForm.slug}
-              onChange={(event) => onChangeOrganizationForm("slug", event.target.value)}
-              placeholder="identificador"
+              onChange={(event) =>
+                onChangeOrganizationForm("slug", event.target.value.toUpperCase().slice(0, 3))
+              }
+              placeholder="Sigla da festa"
+              maxLength={3}
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             />
+            <input
+              value={organizationForm.responsibleGroup}
+              onChange={(event) => onChangeOrganizationForm("responsibleGroup", event.target.value)}
+              placeholder="Responsáveis pela festa"
+              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+            />
+          </div>
+          <div className="mt-4 rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-[#10233f]">Caixas da festa</p>
+                <p className="mt-1 text-xs text-slate-500">Adicione os vendedores que vão operar cada caixa.</p>
+              </div>
+              <button
+                type="button"
+                onClick={onAddOrganizationCashier}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#2563eb] text-white transition hover:bg-[#1d4ed8]"
+                aria-label="Adicionar caixa"
+                title="Adicionar caixa"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+            <div className="mt-3 space-y-2">
+              {organizationCashiers.map((cashier, index) => (
+                <div key={index} className="flex gap-2">
+                  <input
+                    value={cashier}
+                    onChange={(event) => onChangeOrganizationCashier(index, event.target.value)}
+                    placeholder={`Vendedor do caixa ${index + 1}`}
+                    className="h-10 min-w-0 flex-1 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onRemoveOrganizationCashier(index)}
+                    disabled={organizationCashiers.length === 1}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[#d7e3f8] bg-white text-slate-600 transition hover:border-[#2563eb] disabled:cursor-not-allowed disabled:text-slate-300"
+                    aria-label={`Remover caixa ${index + 1}`}
+                    title="Remover caixa"
+                  >
+                    <Minus size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-3">
             <button
               type="submit"
               disabled={isCreatingOrganization}
               className="h-10 w-full rounded-md bg-[#2563eb] text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {isCreatingOrganization ? "Criando..." : "Criar organizacao"}
+              {isCreatingOrganization ? "Criando..." : "Criar festa"}
             </button>
           </div>
         </form>
 
-        <form onSubmit={onAddMember} className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
-          <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
-            <Users size={17} />
-            Membros
+        <form onSubmit={onCreateAccessCode} className="h-fit overflow-hidden rounded-md border border-[#bfdbfe] bg-white shadow-sm shadow-[#0b3a75]/5">
+          <div className="border-b border-[#d7e3f8] bg-[#eaf3ff] px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#1d4ed8]">
+              <ShieldCheck size={17} />
+              Gerar código único
+            </div>
+            <p className="mt-1 text-xs leading-5 text-[#3f5f8f]">
+              Libera o acesso da equipe para a festa selecionada.
+            </p>
           </div>
-          <div className="mt-4 space-y-3">
-            <input
-              value={memberForm.email}
-              onChange={(event) => onChangeMemberForm("email", event.target.value)}
-              placeholder="Email do usuario"
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-              list="profile-emails"
-            />
-            <datalist id="profile-emails">
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.email ?? ""} />
-              ))}
-            </datalist>
+          <div className="space-y-3 p-4">
             <select
-              value={memberForm.organizationId || activeOrganizationId}
-              onChange={(event) => onChangeMemberForm("organizationId", event.target.value)}
+              value={accessCodeForm.organizationId || activeOrganizationId}
+              onChange={(event) => onChangeAccessCodeForm("organizationId", event.target.value)}
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             >
-              {organizations.map((organization) => (
+              <option value="">Selecione a festa</option>
+              {organizationsWithoutAccessCode.map((organization) => (
                 <option key={organization.id} value={organization.id}>
                   {organization.name}
                 </option>
               ))}
             </select>
-            <select
-              value={memberForm.role}
-              onChange={(event) => onChangeMemberForm("role", event.target.value)}
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            >
-              <option value="member">Membro</option>
-              <option value="manager">Gerente</option>
-              <option value="owner">Responsavel</option>
-            </select>
+            <p className="text-xs leading-5 text-slate-500">
+              O código será gerado automaticamente com 8 letras e números. Cada festa pode ter apenas um código ativo.
+            </p>
+            <div className="rounded-md border border-dashed border-[#bfdbfe] bg-[#f8fbff] px-3 py-3">
+              <p className="text-center text-xs font-bold uppercase text-slate-400">
+                {visibleAccessCode ? "Código da festa" : "Código ainda não gerado"}
+              </p>
+              <div className="mt-2 flex items-center justify-center gap-2">
+                <p className="min-h-7 font-mono text-lg font-black tracking-[0.16em] text-[#1d4ed8]">
+                  {visibleAccessCode ?? "--------"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void copyAccessCode()}
+                  disabled={!visibleAccessCode}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#bfdbfe] bg-white text-[#1d4ed8] transition hover:bg-[#eaf3ff] disabled:cursor-not-allowed disabled:text-slate-300"
+                  aria-label="Copiar código"
+                  title="Copiar código"
+                >
+                  <Copy size={15} />
+                </button>
+              </div>
+              {copiedAccessCode && (
+                <p className="mt-2 text-center text-xs font-semibold text-emerald-700">
+                  Código copiado.
+                </p>
+              )}
+            </div>
             <button
               type="submit"
-              disabled={isAddingMember}
+              disabled={isCreatingAccessCode || !selectedAccessCodeOrganization}
               className="h-10 w-full rounded-md bg-[#2563eb] text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {isAddingMember ? "Vinculando..." : "Adicionar membro"}
-            </button>
-          </div>
-        </form>
-
-        <form onSubmit={onCreateGroup} className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
-          <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
-            <Package size={17} />
-            Grupos da organizacao
-          </div>
-          <div className="mt-4 space-y-3">
-            <input
-              value={groupForm.name}
-              onChange={(event) => onChangeGroupForm("name", event.target.value)}
-              placeholder="Nome do grupo"
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            />
-            <input
-              value={groupForm.acronym}
-              onChange={(event) => onChangeGroupForm("acronym", event.target.value)}
-              placeholder="Sigla"
-              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-            />
-            <button
-              type="submit"
-              disabled={isCreatingGroup}
-              className="h-10 w-full rounded-md bg-[#2563eb] text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              {isCreatingGroup ? "Criando..." : "Criar grupo"}
+              {isCreatingAccessCode ? "Gerando..." : "Gerar código"}
             </button>
           </div>
         </form>
@@ -1551,26 +1645,124 @@ function AdminPanel({
 
       <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-bold text-[#10233f]">Codigos ativos</h2>
+          <h2 className="text-base font-bold text-[#10233f]">Festas criadas</h2>
+          <span className="text-sm font-semibold text-slate-500">{organizations.length}</span>
+        </div>
+        <div className="mt-3 divide-y divide-[#dfe8f7]">
+          {organizations.map((organization) => (
+            <div key={organization.id} className="grid gap-3 py-3 lg:grid-cols-[1.2fr_1fr_1.4fr_auto] lg:items-start">
+              <div className="min-w-0">
+                <p className="break-words font-semibold text-[#10233f]">{organization.name}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {organization.event_date
+                    ? new Date(`${organization.event_date}T00:00:00`).toLocaleDateString("pt-BR")
+                    : "Data não informada"}
+                </p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase text-slate-400">Responsáveis</p>
+                <p className="mt-1 break-words text-sm text-slate-600">
+                  {organization.responsible_group ?? "Não informado"}
+                </p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase text-slate-400">Caixas</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(organization.cashier_names?.length ? organization.cashier_names : ["Não informado"]).map(
+                    (cashier, index) => (
+                      <span
+                        key={`${organization.id}-${cashier}-${index}`}
+                        className="rounded bg-[#eaf3ff] px-2 py-1 text-xs font-bold text-[#1d4ed8]"
+                      >
+                        {cashier}
+                      </span>
+                    ),
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                <button
+                  type="button"
+                  onClick={() => onUpdateOrganizationStatus(organization.id, true)}
+                  className={`h-7 rounded px-2 text-[11px] font-semibold uppercase transition ${
+                    organization.is_active === false
+                      ? "border border-[#d7e3f8] bg-white text-slate-400 hover:bg-[#f0f6ff] hover:text-slate-600"
+                      : "bg-emerald-50/70 text-emerald-700"
+                  }`}
+                >
+                  Ativa
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUpdateOrganizationStatus(organization.id, false)}
+                  className={`h-7 rounded px-2 text-[11px] font-semibold uppercase transition ${
+                    organization.is_active === false
+                      ? "bg-red-50/70 text-red-700"
+                      : "border border-[#d7e3f8] bg-white text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  }`}
+                >
+                  Inativa
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteOrganization(organization.id)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 hover:text-red-700"
+                  aria-label={`Excluir festa ${organization.name}`}
+                  title="Excluir"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+          {organizations.length === 0 && (
+            <p className="py-4 text-sm text-slate-500">Nenhuma festa criada ainda.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-bold text-[#10233f]">Códigos ativos</h2>
           <span className="text-sm font-semibold text-slate-500">{accessCodes.length}</span>
         </div>
         <div className="mt-3 divide-y divide-[#dfe8f7]">
           {accessCodes.map((item) => (
-            <div key={item.id} className="grid gap-2 py-3 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
-              <div>
-                <p className="font-semibold text-[#10233f]">{item.code}</p>
-                <p className="text-sm text-slate-500">{item.label ?? "Sem descricao"}</p>
+            <div key={item.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-center">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="break-words font-semibold text-[#10233f]">{item.code}</p>
+                  <button
+                    type="button"
+                    onClick={() => void copyCodeValue(item.code)}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#bfdbfe] bg-white text-[#1d4ed8] transition hover:bg-[#eaf3ff]"
+                    aria-label={`Copiar código ${item.code}`}
+                    title="Copiar código"
+                  >
+                    <Copy size={14} />
+                  </button>
+                </div>
+                <p className="break-words text-sm text-slate-500">{item.label ?? "Sem descrição"}</p>
               </div>
-              <p className="text-sm text-slate-500">
+              <p className="break-words text-sm text-slate-500">
                 {item.organization?.name ?? item.organization_id}
               </p>
               <span className="w-fit rounded bg-[#eaf3ff] px-2 py-1 text-xs font-bold uppercase text-[#1d4ed8]">
                 {item.is_active ? "ativo" : "inativo"}
               </span>
+              <button
+                type="button"
+                onClick={() => onDeleteAccessCode(item.id)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 hover:text-red-700"
+                aria-label={`Excluir código ${item.code}`}
+                title="Excluir"
+              >
+                <Trash2 size={13} />
+              </button>
             </div>
           ))}
           {accessCodes.length === 0 && (
-            <p className="py-4 text-sm text-slate-500">Nenhum codigo criado ainda.</p>
+            <p className="py-4 text-sm text-slate-500">Nenhum código criado ainda.</p>
           )}
         </div>
       </div>
@@ -1578,57 +1770,43 @@ function AdminPanel({
       <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-base font-bold text-[#10233f]">Contas do sistema</h2>
-          <span className="text-sm font-semibold text-slate-500">{profiles.length}</span>
+          <span className="text-sm font-semibold text-slate-500">{systemAccounts.length}</span>
         </div>
         <div className="mt-3 divide-y divide-[#dfe8f7]">
-          {profiles.map((profile) => (
-            <div key={profile.id} className="grid gap-2 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+          {systemAccounts.map((account) => (
+            <div key={account.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-center">
               <div className="min-w-0">
                 <p className="truncate font-semibold text-[#10233f]">
-                  {profile.full_name || profile.email || profile.id}
+                  {account.name}
                 </p>
-                <p className="truncate text-sm text-slate-500">{profile.email ?? profile.id}</p>
+                <p className="truncate text-sm text-slate-500">{account.detail}</p>
               </div>
               <span className="w-fit rounded bg-[#eaf3ff] px-2 py-1 text-xs font-bold uppercase text-[#1d4ed8]">
-                {profile.role}
+                {account.role}
+              </span>
+              <span
+                className={`w-fit rounded px-2 py-1 text-xs font-bold uppercase ${
+                  account.isActive
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-slate-100 text-slate-500"
+                }`}
+              >
+                {account.isActive ? "ativo" : "inativo"}
               </span>
               <button
                 type="button"
-                disabled={profile.id === currentUserId || deletingUserId === profile.id}
-                onClick={() => onDeleteAccount(profile.id)}
-                className="h-9 rounded-md border border-red-200 px-3 text-sm font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                disabled={account.id === officialAdmin.id}
+                onClick={() => onDeleteSystemAccount(account.id)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                aria-label={`Excluir conta ${account.name}`}
+                title="Excluir"
               >
-                {deletingUserId === profile.id ? "Excluindo..." : "Excluir"}
+                <Trash2 size={13} />
               </button>
             </div>
           ))}
-          {profiles.length === 0 && (
+          {systemAccounts.length === 0 && (
             <p className="py-4 text-sm text-slate-500">Nenhuma conta carregada.</p>
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-bold text-[#10233f]">Membros vinculados</h2>
-          <span className="text-sm font-semibold text-slate-500">{memberships.length}</span>
-        </div>
-        <div className="mt-3 divide-y divide-[#dfe8f7]">
-          {memberships.map((membership) => (
-            <div key={`${membership.organization_id}-${membership.user_id}`} className="grid gap-2 py-3 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
-              <p className="font-semibold text-[#10233f]">
-                {membership.profile?.email ?? membership.user_id}
-              </p>
-              <p className="text-sm text-slate-500">
-                {membership.organization?.name ?? membership.organization_id}
-              </p>
-              <span className="rounded bg-[#eaf3ff] px-2 py-1 text-xs font-bold uppercase text-[#1d4ed8]">
-                {membership.role}
-              </span>
-            </div>
-          ))}
-          {memberships.length === 0 && (
-            <p className="py-4 text-sm text-slate-500">Nenhum membro vinculado ainda.</p>
           )}
         </div>
       </div>
@@ -1663,7 +1841,7 @@ function SearchBox({
   value: string;
 }) {
   return (
-    <label className={`flex items-center rounded-md border border-[#d7e3f8] bg-[#f8fbff] text-sm text-slate-600 transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15 ${compact ? "h-9 sm:w-48" : "h-10 sm:w-80"}`}>
+    <label className={`flex min-w-0 items-center rounded-md border border-[#d7e3f8] bg-[#f8fbff] text-sm text-slate-600 transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15 ${compact ? "h-9 w-full sm:w-48" : "h-10 w-full sm:w-80"}`}>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -1691,10 +1869,10 @@ function ProductForm({
   productForm: typeof initialProductForm;
 }) {
   return (
-    <form onSubmit={onSubmit} className="grid gap-3 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-md shadow-[#0b3a75]/5 md:grid-cols-2 xl:grid-cols-6">
-      <input value={productForm.name} onChange={(event) => onUpdate("name", event.target.value)} placeholder="Produto" className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 xl:col-span-2" />
-      <input value={productForm.category} onChange={(event) => onUpdate("category", event.target.value)} placeholder="Categoria" className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <select value={productForm.groupId} onChange={(event) => onUpdate("groupId", event.target.value)} className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15">
+    <form onSubmit={onSubmit} className="grid gap-3 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-md shadow-[#0b3a75]/5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <input value={productForm.name} onChange={(event) => onUpdate("name", event.target.value)} placeholder="Produto" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 xl:col-span-2" />
+      <input value={productForm.category} onChange={(event) => onUpdate("category", event.target.value)} placeholder="Categoria" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <select value={productForm.groupId} onChange={(event) => onUpdate("groupId", event.target.value)} className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15">
         <option value="">Grupo</option>
         {groups.map((group) => (
           <option key={group.id} value={group.id}>
@@ -1702,9 +1880,9 @@ function ProductForm({
           </option>
         ))}
       </select>
-      <input value={productForm.salePrice} onChange={(event) => onUpdate("salePrice", event.target.value)} placeholder="Valor de venda" inputMode="decimal" className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <input value={productForm.unitCost} onChange={(event) => onUpdate("unitCost", event.target.value)} placeholder="Custo para fazer" inputMode="decimal" className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <input value={productForm.stockQuantity} onChange={(event) => onUpdate("stockQuantity", event.target.value)} placeholder="Estoque" inputMode="numeric" className="h-10 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <input value={productForm.salePrice} onChange={(event) => onUpdate("salePrice", event.target.value)} placeholder="Valor de venda" inputMode="decimal" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <input value={productForm.unitCost} onChange={(event) => onUpdate("unitCost", event.target.value)} placeholder="Custo para fazer" inputMode="decimal" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <input value={productForm.stockQuantity} onChange={(event) => onUpdate("stockQuantity", event.target.value)} placeholder="Estoque" inputMode="numeric" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
       <button type="submit" disabled={isCreatingProduct} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#2563eb] px-4 text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300 xl:col-span-2">
         <Plus size={15} />
         {isCreatingProduct ? "Cadastrando..." : "Cadastrar produto"}
@@ -1727,29 +1905,29 @@ function ProductGrid({
       {products.map((product, index) => {
         const content = (
           <>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="font-bold text-[#10233f]">{product.name}</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <p className="break-words font-bold text-[#10233f]">{product.name}</p>
                 <p className="mt-1 text-sm text-slate-500">
                   {product.category} - {product.group?.acronym ?? product.group?.name ?? "Sem grupo"}
                 </p>
               </div>
-              <span className="rounded bg-[#eaf3ff] px-2 py-1 text-sm font-black text-[#1d4ed8]">
+              <span className="w-fit shrink-0 rounded bg-[#eaf3ff] px-2 py-1 text-sm font-black text-[#1d4ed8]">
                 {currency.format(product.sale_price)}
               </span>
             </div>
-            <dl className="mt-5 grid grid-cols-3 gap-2 text-sm">
-              <div>
+            <dl className="mt-5 grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-3">
+              <div className="min-w-0">
                 <dt className="text-slate-500">Custo</dt>
-                <dd className="font-semibold">{currency.format(product.unit_cost)}</dd>
+                <dd className="break-words font-semibold">{currency.format(product.unit_cost)}</dd>
               </div>
-              <div>
+              <div className="min-w-0">
                 <dt className="text-slate-500">Lucro</dt>
-                <dd className="font-semibold text-[#2563eb]">
+                <dd className="break-words font-semibold text-[#2563eb]">
                   {currency.format(product.sale_price - product.unit_cost)}
                 </dd>
               </div>
-              <div>
+              <div className="min-w-0">
                 <dt className="text-slate-500">Estoque</dt>
                 <dd className="font-semibold">{product.stock_quantity}</dd>
               </div>
@@ -1818,13 +1996,13 @@ function CartPanel({
           cart.map((item) => (
             <div key={item.product.id} className="rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{item.product.name}</p>
+                <div className="min-w-0">
+                  <p className="break-words font-semibold">{item.product.name}</p>
                   <p className="text-sm text-slate-500">
                     {currency.format(item.product.sale_price)} cada
                   </p>
                 </div>
-                <p className="font-bold">
+                <p className="shrink-0 font-bold">
                   {currency.format(item.product.sale_price * item.quantity)}
                 </p>
               </div>
@@ -1844,7 +2022,7 @@ function CartPanel({
         )}
       </div>
 
-      <div className="mt-5 grid grid-cols-4 gap-2">
+      <div className="mt-5 grid grid-cols-2 gap-2 min-[420px]:grid-cols-4">
         {Object.entries(paymentLabels).map(([value, label]) => (
           <button
             key={value}
@@ -1862,13 +2040,13 @@ function CartPanel({
       </div>
 
       <dl className="mt-5 space-y-2 text-sm">
-        <div className="flex justify-between">
+        <div className="flex justify-between gap-3">
           <dt className="text-slate-500">Total</dt>
-          <dd className="font-bold">{currency.format(cartTotal)}</dd>
+          <dd className="text-right font-bold">{currency.format(cartTotal)}</dd>
         </div>
-        <div className="flex justify-between">
+        <div className="flex justify-between gap-3">
           <dt className="text-slate-500">Lucro líquido previsto</dt>
-          <dd className="font-bold text-[#2563eb]">{currency.format(cartProfit)}</dd>
+          <dd className="text-right font-bold text-[#2563eb]">{currency.format(cartProfit)}</dd>
         </div>
       </dl>
 
@@ -1887,10 +2065,10 @@ function CartPanel({
 
 function SalesList({ sales }: { sales: RecentSale[] }) {
   return (
-    <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-md shadow-[#0b3a75]/5">
+    <div className="overflow-hidden rounded-md border border-[#d7e3f8] bg-white p-3 shadow-md shadow-[#0b3a75]/5 sm:p-4">
       <div className="divide-y divide-[#dfe8f7]">
         {sales.map((sale, index) => (
-          <div key={sale.id} className={`grid gap-3 rounded-md px-3 py-4 first:pt-3 last:pb-3 sm:grid-cols-[1fr_auto_auto] sm:items-center ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}>
+          <div key={sale.id} className={`grid min-w-0 gap-2 rounded-md px-2 py-4 first:pt-3 last:pb-3 min-[420px]:grid-cols-[1fr_auto_auto] min-[420px]:items-center sm:gap-3 sm:px-3 ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}>
             <div className="min-w-0">
               <p className="font-medium text-[#10233f]">
                 {paymentLabels[sale.payment_method] ?? sale.payment_method}
@@ -1905,8 +2083,8 @@ function SalesList({ sales }: { sales: RecentSale[] }) {
                 - {sale.cashier_name ?? "Sem caixa"}
               </p>
             </div>
-            <p className="font-bold">{currency.format(sale.gross_total)}</p>
-            <p className="font-semibold text-[#2563eb]">+{currency.format(sale.profit_total)}</p>
+            <p className="font-bold min-[420px]:text-right">{currency.format(sale.gross_total)}</p>
+            <p className="font-semibold text-[#2563eb] min-[420px]:text-right">+{currency.format(sale.profit_total)}</p>
           </div>
         ))}
       </div>
@@ -1924,12 +2102,12 @@ function Metric({
   value: string;
 }) {
   return (
-    <div className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
+    <div className="min-w-0 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
       <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
         {icon}
         {label}
       </div>
-      <p className="mt-3 text-2xl font-black tracking-normal text-[#10233f]">{value}</p>
+      <p className="mt-3 break-words text-xl font-black tracking-normal text-[#10233f] sm:text-2xl">{value}</p>
     </div>
   );
 }

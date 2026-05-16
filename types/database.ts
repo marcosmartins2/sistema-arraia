@@ -1,6 +1,6 @@
 export type AppRole = "admin" | "member";
 
-export type OrganizationRole = "owner" | "manager" | "member";
+export type OrganizationRole = "admin" | "owner" | "manager" | "member";
 
 export type Profile = {
   id: string;
@@ -14,6 +14,10 @@ export type Organization = {
   name: string;
   slug: string;
   created_by: string | null;
+  event_date?: string | null;
+  responsible_group?: string | null;
+  cashier_names?: string[];
+  is_active?: boolean;
 };
 
 export type OrganizationMember = {
