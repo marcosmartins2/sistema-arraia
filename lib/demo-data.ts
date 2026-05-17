@@ -1,6 +1,6 @@
 import type { Group, Product, RecentSale, SaleReport } from "@/types/database";
 
-export const demoOrganizationId = "arraia-parafuso-solto";
+export const demoOrganizationId = "evento-demo";
 
 export const demoGroups: Group[] = [
   {

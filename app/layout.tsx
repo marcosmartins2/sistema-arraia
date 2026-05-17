@@ -18,8 +18,8 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Sistema Arraiá",
-  description: "Sistema para fichas, vendas e lucro da festa.",
+  title: "Gestão de Eventos",
+  description: "Plataforma para vendas, estoque e relatórios de eventos.",
   icons: {
     icon: "/icon.svg",
   },

@@ -55,6 +55,8 @@ export type Product = {
   sale_price: number;
   unit_cost: number;
   stock_quantity: number;
+  promo_min_quantity?: number | null;
+  promo_discount_amount?: number | null;
   is_active: boolean;
   group?: Group;
 };

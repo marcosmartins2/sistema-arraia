@@ -1,0 +1,35 @@
+
+> sistema-arraia@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://169.254.83.107:3000
+✓ Ready in 3.2s
+Creating turbopack project {
+  dir: 'C:\\Users\\Dell Inspiron\\Downloads\\tarefasPS\\sistema-arraia',
+  testMode: true
+}
+
+ HEAD / 200 in 880ms (next.js: 579ms, application-code: 301ms)
+ GET / 200 in 908ms (next.js: 423ms, application-code: 485ms)
+✓ Compiled in 912ms
+ GET / 200 in 236ms (next.js: 140ms, application-code: 96ms)
+✓ Compiled in 209ms
+ GET / 200 in 327ms (next.js: 185ms, application-code: 142ms)
+✓ Compiled in 242ms
+ GET / 200 in 245ms (next.js: 139ms, application-code: 105ms)
+✓ Compiled in 231ms
+ GET / 200 in 241ms (next.js: 151ms, application-code: 90ms)
+ HEAD / 200 in 200ms (next.js: 4ms, application-code: 196ms)
+✓ Compiled in 197ms
+ GET / 200 in 528ms (next.js: 261ms, application-code: 267ms)
+✓ Compiled in 79ms
+ GET / 200 in 351ms (next.js: 217ms, application-code: 134ms)
+✓ Compiled in 114ms
+ GET / 200 in 286ms (next.js: 191ms, application-code: 95ms)
+✓ Compiled in 198ms
+ GET / 200 in 559ms (next.js: 367ms, application-code: 191ms)
+ GET / 200 in 367ms (next.js: 17ms, application-code: 350ms)
+ GET / 200 in 103ms (next.js: 7ms, application-code: 96ms)
+[?25h

@@ -7,6 +7,7 @@ import {
   Banknote,
   BarChart3,
   Building2,
+  ChevronDown,
   CircleDollarSign,
   Copy,
   Eye,
@@ -18,7 +19,6 @@ import {
   Plus,
   ReceiptText,
   RefreshCw,
-  Search,
   ShieldCheck,
   ShoppingBasket,
   Ticket,
@@ -58,14 +58,23 @@ const currency = new Intl.NumberFormat("pt-BR", {
 const paymentLabels: Record<string, string> = {
   pix: "Pix",
   cash: "Dinheiro",
+  credit: "Crédito",
+  debit: "Débito",
   card: "Cartão",
   token: "Ficha",
 };
 
+const paymentOptions = [
+  { value: "pix", label: "Pix" },
+  { value: "cash", label: "Dinheiro" },
+  { value: "credit", label: "Crédito" },
+  { value: "debit", label: "Débito" },
+];
+
 const initialProductForm = {
   name: "",
   category: "",
-  groupId: "",
+  responsibleName: "",
   salePrice: "",
   unitCost: "",
   stockQuantity: "",
@@ -104,6 +113,32 @@ type AppUser = {
   id: string;
   email?: string;
 };
+type ProductDraft = {
+  name: string;
+  category: string;
+  responsibleName: string;
+  salePrice: string;
+  unitCost: string;
+  stockQuantity: string;
+};
+type ProductPromotionDraft = {
+  mode: "price" | "discount";
+  value: string;
+  minQuantity: string;
+};
+type ProductPromotionUpdate = {
+  promo_min_quantity: number | null;
+  promo_discount_amount: number | null;
+};
+
+const ACCESS_CODE_LENGTH = 8;
+const ACCESS_CODE_ALLOWED_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+
+function getAuthGuidance(mode: AuthMode) {
+  return mode === "code"
+    ? "Digite o código do evento com 8 caracteres para entrar."
+    : "Use o email e a senha do administrador para acessar a gestão completa.";
+}
 
 const dashboardViews: Array<{
   id: DashboardView;
@@ -118,7 +153,11 @@ const dashboardViews: Array<{
 ];
 
 function parseNumber(value: string) {
-  return Number(value.replace(",", "."));
+  if (!value.trim()) {
+    return Number.NaN;
+  }
+
+  return Number(value.replace(/\./g, "").replace(",", "."));
 }
 
 function slugify(value: string) {
@@ -129,6 +168,116 @@ function slugify(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function normalizeAccessCodeInput(value: string) {
+  return value
+    .toUpperCase()
+    .replace(/[^A-HJ-NP-Z2-9]/g, "")
+    .slice(0, ACCESS_CODE_LENGTH);
+}
+
+function isAccessCodeFormatValid(value: string) {
+  return ACCESS_CODE_ALLOWED_PATTERN.test(value);
+}
+
+function normalizeCurrencyInput(value: string) {
+  const digits = value.replace(/\D/g, "");
+
+  if (!digits) {
+    return "";
+  }
+
+  const padded = digits.padStart(3, "0");
+  const cents = padded.slice(-2);
+  const integerPart = String(Number(padded.slice(0, -2)));
+
+  return `${integerPart},${cents}`;
+}
+
+function normalizeIntegerInput(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function formatCurrencyInputFromNumber(value: number) {
+  return value.toFixed(2).replace(".", ",");
+}
+
+function createProductDraft(product: Product): ProductDraft {
+  return {
+    name: product.name,
+    category: product.category,
+    responsibleName: product.group?.name ?? "",
+    salePrice: formatCurrencyInputFromNumber(product.sale_price),
+    unitCost: formatCurrencyInputFromNumber(product.unit_cost),
+    stockQuantity: String(product.stock_quantity),
+  };
+}
+
+function getProductPromotion(product: Product) {
+  const minQuantity =
+    typeof product.promo_min_quantity === "number" ? Math.floor(product.promo_min_quantity) : 0;
+  const discountAmount =
+    typeof product.promo_discount_amount === "number" ? product.promo_discount_amount : 0;
+
+  if (minQuantity < 2 || discountAmount <= 0) {
+    return null;
+  }
+
+  return { minQuantity, discountAmount };
+}
+
+function createPromotionDraft(product: Product): ProductPromotionDraft {
+  const promotion = getProductPromotion(product);
+
+  if (!promotion) {
+    return {
+      mode: "price",
+      value: formatCurrencyInputFromNumber(product.sale_price),
+      minQuantity: "",
+    };
+  }
+
+  return {
+    mode: "discount",
+    value: formatCurrencyInputFromNumber(promotion.discountAmount),
+    minQuantity: String(promotion.minQuantity),
+  };
+}
+
+function getEffectiveUnitPrice(product: Product, quantity: number) {
+  const promotion = getProductPromotion(product);
+
+  if (!promotion || quantity < promotion.minQuantity) {
+    return product.sale_price;
+  }
+
+  return Math.max(0, product.sale_price - promotion.discountAmount);
+}
+
+function getPromotionSummary(product: Product) {
+  const promotion = getProductPromotion(product);
+
+  if (!promotion) {
+    return null;
+  }
+
+  return `Promoção: a partir de ${promotion.minQuantity} unidades, desconto de ${currency.format(
+    promotion.discountAmount,
+  )} por item.`;
+}
+
+function getPreferredCashierName(
+  organization: Organization | null | undefined,
+  currentCashierName = "",
+) {
+  const cashierNames = organization?.cashier_names?.map((name) => name.trim()).filter(Boolean) ?? [];
+
+  if (cashierNames.includes(currentCashierName)) {
+    return currentCashierName;
+  }
+
+  return cashierNames[0] ?? "";
 }
 
 function generateAccessCode(existingCodes: OrganizationAccessCode[]) {
@@ -154,6 +303,7 @@ export default function ArraiaDashboard() {
   const [accessCodes, setAccessCodes] = useState<OrganizationAccessCode[]>([]);
   const [authMode, setAuthMode] = useState<AuthMode>("code");
   const [authForm, setAuthForm] = useState(initialAuthForm);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [accessCode, setAccessCode] = useState("");
   const [organizationForm, setOrganizationForm] = useState(initialOrganizationForm);
   const [organizationCashiers, setOrganizationCashiers] = useState([""]);
@@ -168,20 +318,21 @@ export default function ArraiaDashboard() {
   const [recentSales, setRecentSales] = useState<RecentSale[]>(demoRecentSales);
   const [cart, setCart] = useState<SaleItemDraft[]>([]);
   const [paymentMethod, setPaymentMethod] = useState("pix");
-  const [cashierName, setCashierName] = useState("Caixa 1");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [cashierName, setCashierName] = useState("");
   const [activeView, setActiveView] = useState<DashboardView>("cashier");
   const [activeOrganizationId, setActiveOrganizationId] = useState(demoOrganizationId);
   const [productForm, setProductForm] = useState(initialProductForm);
+  const [productDrafts, setProductDrafts] = useState<Record<string, ProductDraft>>({});
   const [status, setStatus] = useState(
     isSupabaseConfigured
       ? "Conectando ao Supabase..."
-      : "Entre com o código da festa ou acesse como admin.",
+      : getAuthGuidance("code"),
   );
   const [isAuthReady, setIsAuthReady] = useState(!isSupabaseConfigured);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingProduct, setIsCreatingProduct] = useState(false);
+  const [savingProductId, setSavingProductId] = useState<string | null>(null);
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
   const isOfficialAdminSession = user?.id === officialAdmin.id;
@@ -224,6 +375,7 @@ export default function ArraiaDashboard() {
     if (!organizationId) {
       setStatus("Nenhuma organização disponível para este usuário.");
       setOrganizations([]);
+      setCashierName("");
       setGroups([]);
       setProducts([]);
       return;
@@ -232,6 +384,12 @@ export default function ArraiaDashboard() {
     setProfile(nextProfile);
     setOrganizations(nextOrganizations);
     setActiveOrganizationId(organizationId);
+    setCashierName((current) =>
+      getPreferredCashierName(
+        nextOrganizations.find((organization) => organization.id === organizationId),
+        current,
+      ),
+    );
     setAccessCodeForm((current) => ({
       ...current,
       organizationId: current.organizationId || organizationId,
@@ -283,7 +441,7 @@ export default function ArraiaDashboard() {
   }
 
   async function loadDataByAccessCode(code: string, { announce = true } = {}) {
-    const normalizedCode = code.trim().toUpperCase();
+    const normalizedCode = normalizeAccessCodeInput(code.trim());
 
     if (!normalizedCode) return;
 
@@ -301,6 +459,7 @@ export default function ArraiaDashboard() {
           current.some((item) => item.id === organization.id) ? current : [organization, ...current],
         );
         setActiveOrganizationId(organization.id);
+        setCashierName((current) => getPreferredCashierName(organization, current));
       }
 
       setStatus("Dados sincronizados pelo código local.");
@@ -312,7 +471,7 @@ export default function ArraiaDashboard() {
     }
 
     if (!dashboardDataUrl) {
-      setStatus("Modo demonstrativo sincronizado localmente.");
+      setStatus("Esse código não está cadastrado entre os acessos ativos.");
       return;
     }
 
@@ -333,6 +492,7 @@ export default function ArraiaDashboard() {
     const organization = payload.organization as Organization;
     setOrganizations([organization]);
     setActiveOrganizationId(organization.id);
+    setCashierName((current) => getPreferredCashierName(organization, current));
     setGroups((payload.groups ?? []) as Group[]);
     setProducts((payload.products ?? []) as Product[]);
     setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
@@ -395,17 +555,6 @@ export default function ArraiaDashboard() {
     return products.filter((product) => product.organization_id === activeOrganizationId);
   }, [activeOrganizationId, products]);
 
-  const filteredProducts = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-    if (!term) return activeProducts;
-
-    return activeProducts.filter((product) =>
-      [product.name, product.category, product.group?.name, product.group?.acronym]
-        .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(term)),
-    );
-  }, [activeProducts, searchTerm]);
-
   const activeRecentSales = useMemo(() => {
     if (!activeOrganizationId) return [];
     return recentSales.filter((sale) => sale.organization_id === activeOrganizationId);
@@ -426,13 +575,15 @@ export default function ArraiaDashboard() {
           items_sold: 0,
         };
 
-  const cartTotal = cart.reduce(
-    (total, item) => total + item.quantity * item.product.sale_price,
-    0,
-  );
+  const cartTotal = cart.reduce((total, item) => {
+    return total + item.quantity * getEffectiveUnitPrice(item.product, item.quantity);
+  }, 0);
 
   const cartProfit = cart.reduce((total, item) => {
-    return total + item.quantity * (item.product.sale_price - item.product.unit_cost);
+    return (
+      total +
+      item.quantity * (getEffectiveUnitPrice(item.product, item.quantity) - item.product.unit_cost)
+    );
   }, 0);
 
   const visibleDashboardViews = dashboardViews.filter(
@@ -440,16 +591,25 @@ export default function ArraiaDashboard() {
   );
   const activeLabel = visibleDashboardViews.find((view) => view.id === activeView)?.label ?? "Caixa";
   const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId);
+  const activeCashierNames = useMemo(
+    () => activeOrganization?.cashier_names?.map((name) => name.trim()).filter(Boolean) ?? [],
+    [activeOrganization],
+  );
+  const activeGroups = useMemo(
+    () => groups.filter((group) => group.organization_id === activeOrganizationId),
+    [activeOrganizationId, groups],
+  );
 
   function changeActiveOrganization(organizationId: string) {
     setActiveOrganizationId(organizationId);
     setCart([]);
-    setSearchTerm("");
+    setAccessCodeForm((current) => ({ ...current, organizationId }));
     const organization = organizations.find((item) => item.id === organizationId);
+    setCashierName((current) => getPreferredCashierName(organization, current));
     setStatus(
       organization
-        ? `Visualizando dados da festa: ${organization.name}.`
-        : "Selecione uma festa para visualizar os dados.",
+        ? `Visualizando dados do evento: ${organization.name}.`
+        : "Selecione um evento para visualizar os dados.",
     );
   }
 
@@ -469,6 +629,7 @@ export default function ArraiaDashboard() {
         (organization) => organization.id !== organizationId && organization.is_active !== false,
       );
       setActiveOrganizationId(nextActiveOrganization?.id ?? "");
+      setCashierName(getPreferredCashierName(nextActiveOrganization));
       setCart([]);
     }
     setStatus(isActive ? "Festa ativada." : "Festa inativada.");
@@ -488,6 +649,7 @@ export default function ArraiaDashboard() {
         (organization) => organization.id !== organizationId && organization.is_active !== false,
       );
       setActiveOrganizationId(nextActiveOrganization?.id ?? "");
+      setCashierName(getPreferredCashierName(nextActiveOrganization));
       setCart([]);
     }
 
@@ -548,7 +710,86 @@ export default function ArraiaDashboard() {
   }
 
   function updateProductForm(field: keyof typeof initialProductForm, value: string) {
-    setProductForm((current) => ({ ...current, [field]: value }));
+    const nextValue =
+      field === "salePrice" || field === "unitCost"
+        ? normalizeCurrencyInput(value)
+        : field === "stockQuantity"
+          ? normalizeIntegerInput(value)
+          : value;
+
+    setProductForm((current) => ({ ...current, [field]: nextValue }));
+  }
+
+  function updateProductDraft(product: Product, field: keyof ProductDraft, value: string) {
+    const nextValue =
+      field === "salePrice" || field === "unitCost"
+        ? normalizeCurrencyInput(value)
+        : field === "stockQuantity"
+          ? normalizeIntegerInput(value)
+          : value;
+
+    setProductDrafts((current) => ({
+      ...current,
+      [product.id]: {
+        ...(current[product.id] ?? createProductDraft(product)),
+        [field]: nextValue,
+      },
+    }));
+  }
+
+  async function ensureResponsibleGroup(responsibleName: string) {
+    const normalizedResponsibleName = responsibleName.trim();
+
+    if (!normalizedResponsibleName) {
+      setStatus("Informe quem é o responsável por fazer e vender esse produto.");
+      return null;
+    }
+
+    const existingGroup =
+      activeGroups.find(
+        (item) => item.name.trim().toLowerCase() === normalizedResponsibleName.toLowerCase(),
+      ) ?? null;
+
+    if (existingGroup) {
+      return existingGroup;
+    }
+
+    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
+      const createdGroup: Group = {
+        id: crypto.randomUUID(),
+        organization_id: activeOrganizationId,
+        name: normalizedResponsibleName,
+        acronym: null,
+        color: "#2563eb",
+      };
+
+      setGroups((current) =>
+        [...current, createdGroup].sort((a, b) => a.name.localeCompare(b.name)),
+      );
+      return createdGroup;
+    }
+
+    const groupResult = await supabase
+      .from("groups")
+      .insert({
+        organization_id: activeOrganizationId,
+        name: normalizedResponsibleName,
+        acronym: null,
+        color: "#2563eb",
+      })
+      .select()
+      .single();
+
+    if (groupResult.error) {
+      setStatus(`Não foi possível salvar o responsável: ${groupResult.error.message}`);
+      return null;
+    }
+
+    const createdGroup = groupResult.data as Group;
+    setGroups((current) =>
+      [...current, createdGroup].sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    return createdGroup;
   }
 
   async function createProduct(event: FormEvent<HTMLFormElement>) {
@@ -556,21 +797,20 @@ export default function ArraiaDashboard() {
 
     const name = productForm.name.trim();
     const category = productForm.category.trim();
-    const groupId = productForm.groupId || groups[0]?.id;
+    const responsibleName = productForm.responsibleName.trim();
     const salePrice = parseNumber(productForm.salePrice);
     const unitCost = parseNumber(productForm.unitCost);
     const stockQuantity = parseNumber(productForm.stockQuantity);
-    const group = groups.find((item) => item.id === groupId);
 
     if (
       !name ||
       !category ||
-      !groupId ||
+      !responsibleName ||
       !Number.isFinite(salePrice) ||
       !Number.isFinite(unitCost) ||
       !Number.isFinite(stockQuantity)
     ) {
-      setStatus("Preencha nome, categoria, grupo, valor de venda, custo para fazer e estoque.");
+      setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque.");
       return;
     }
 
@@ -579,9 +819,15 @@ export default function ArraiaDashboard() {
       return;
     }
 
+    const responsibleGroup = await ensureResponsibleGroup(responsibleName);
+
+    if (!responsibleGroup) {
+      return;
+    }
+
     const productPayload = {
       organization_id: activeOrganizationId,
-      group_id: groupId,
+      group_id: responsibleGroup.id,
       name,
       category,
       sale_price: salePrice,
@@ -594,12 +840,12 @@ export default function ArraiaDashboard() {
       const product: Product = {
         id: crypto.randomUUID(),
         ...productPayload,
-        group,
+        group: responsibleGroup,
       };
 
       setProducts((current) => [...current, product].sort((a, b) => a.name.localeCompare(b.name)));
       setProductForm(initialProductForm);
-      setStatus("Produto cadastrado no modo demonstrativo.");
+      setStatus("Produto cadastrado e disponível no caixa.");
       return;
     }
 
@@ -623,11 +869,122 @@ export default function ArraiaDashboard() {
       [...current, result.data as Product].sort((a, b) => a.name.localeCompare(b.name)),
     );
     setProductForm(initialProductForm);
-    setStatus("Produto cadastrado com valor de venda e custo para fazer.");
+    setStatus("Produto cadastrado e disponível no caixa.");
+  }
+
+  function resetProductDraft(productId: string) {
+    setProductDrafts((current) => {
+      const nextDrafts = { ...current };
+      delete nextDrafts[productId];
+      return nextDrafts;
+    });
+  }
+
+  async function saveProductChanges(
+    productId: string,
+    draftOverride?: ProductDraft,
+    promotionOverride?: ProductPromotionUpdate,
+  ) {
+    const product = products.find((item) => item.id === productId);
+
+    if (!product) {
+      return;
+    }
+
+    const draft = draftOverride ?? productDrafts[productId] ?? createProductDraft(product);
+    const name = draft.name.trim();
+    const category = draft.category.trim();
+    const responsibleName = draft.responsibleName.trim();
+    const salePrice = parseNumber(draft.salePrice);
+    const unitCost = parseNumber(draft.unitCost);
+    const stockQuantity = parseNumber(draft.stockQuantity);
+
+    if (
+      !name ||
+      !category ||
+      !responsibleName ||
+      !Number.isFinite(salePrice) ||
+      !Number.isFinite(unitCost) ||
+      !Number.isFinite(stockQuantity)
+    ) {
+      setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque antes de salvar.");
+      return;
+    }
+
+    if (salePrice < 0 || unitCost < 0 || stockQuantity < 0) {
+      setStatus("Valores de venda, custo e estoque não podem ser negativos.");
+      return;
+    }
+
+    const responsibleGroup = await ensureResponsibleGroup(responsibleName);
+
+    if (!responsibleGroup) {
+      return;
+    }
+
+    const productPromotion = promotionOverride ?? {
+      promo_min_quantity: product.promo_min_quantity ?? null,
+      promo_discount_amount: product.promo_discount_amount ?? null,
+    };
+    const productPayload = {
+      organization_id: activeOrganizationId,
+      group_id: responsibleGroup.id,
+      name,
+      category,
+      sale_price: salePrice,
+      unit_cost: unitCost,
+      stock_quantity: Math.floor(stockQuantity),
+      promo_min_quantity: productPromotion.promo_min_quantity,
+      promo_discount_amount: productPromotion.promo_discount_amount,
+      is_active: true,
+    };
+
+    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
+      setProducts((current) =>
+        current
+          .map((item) =>
+            item.id === productId
+              ? { ...item, ...productPayload, group: responsibleGroup }
+              : item,
+          )
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+      resetProductDraft(productId);
+      setStatus("Produto atualizado e pronto para vender no caixa.");
+      return;
+    }
+
+    setSavingProductId(productId);
+    const result = await supabase
+      .from("products")
+      .update(productPayload)
+      .eq("id", productId)
+      .eq("organization_id", activeOrganizationId)
+      .select("*, group:groups(*)")
+      .single();
+    setSavingProductId(null);
+
+    if (result.error) {
+      setStatus(`Não foi possível atualizar o produto: ${result.error.message}`);
+      return;
+    }
+
+    setProducts((current) =>
+      current
+        .map((item) => (item.id === productId ? (result.data as Product) : item))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    resetProductDraft(productId);
+    setStatus("Produto atualizado e pronto para vender no caixa.");
   }
 
   async function finishSale() {
     if (!cart.length) return;
+
+    if (!cashierName) {
+      setStatus("Selecione o vendedor do caixa antes de registrar a venda.");
+      return;
+    }
 
     if (isOfficialAdminSession || !isSupabaseConfigured || !registerSaleUrl || !supabase) {
       const sale: RecentSale = {
@@ -689,7 +1046,7 @@ export default function ArraiaDashboard() {
 
     if (!accessToken && !accessCode) {
       setIsSaving(false);
-      setStatus("Entre com o código da festa para registrar vendas.");
+      setStatus("Entre com o código do evento para registrar vendas.");
       return;
     }
 
@@ -730,29 +1087,46 @@ export default function ArraiaDashboard() {
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setAuthMessage(null);
 
     if (authMode === "code") {
-      const code = authForm.accessCode.trim().toUpperCase();
+      const code = normalizeAccessCodeInput(authForm.accessCode.trim());
 
       if (!code) {
-        setStatus("Informe o código da festa.");
+        const message = "Digite o código do evento para eu localizar o acesso.";
+        setAuthMessage(message);
+        setStatus(message);
+        return;
+      }
+
+      if (code.length !== ACCESS_CODE_LENGTH || !isAccessCodeFormatValid(code)) {
+        const message = "Código inválido. Tente novamente.";
+        setAuthMessage(message);
+        setStatus(message);
         return;
       }
 
       if (!dashboardDataUrl) {
+        const localCode = accessCodes.find(
+          (item) => item.code.toUpperCase() === code && item.is_active,
+        );
+        const organization = localCode?.organization;
+
+        if (!localCode || !organization) {
+          const message = "Não encontrei esse código. Tente novamente.";
+          setAuthMessage(message);
+          setStatus(message);
+          return;
+        }
+
         setAccessCode(code);
         setUser({ id: `code-${code}`, email: `${code}@acesso.local` });
         setProfile({ id: `code-${code}`, email: null, full_name: "Equipe de vendas", role: "member" });
-        setOrganizations([
-          {
-            id: demoOrganizationId,
-            name: "Arraia Parafuso Solto",
-            slug: "arraia-parafuso-solto",
-            created_by: null,
-          },
-        ]);
-        setActiveOrganizationId(demoOrganizationId);
+        setOrganizations([organization]);
+        setActiveOrganizationId(organization.id);
+        setCashierName(getPreferredCashierName(organization));
         setAuthForm(initialAuthForm);
+        setAuthMessage(null);
         setStatus("Código aceito no modo demonstrativo.");
         return;
       }
@@ -769,16 +1143,23 @@ export default function ArraiaDashboard() {
       setIsSubmittingAuth(false);
 
       if (!response.ok) {
-        setStatus(payload?.error ?? "Código inválido.");
+        const message =
+          response.status >= 500
+            ? "Não consegui validar esse código agora. Tente novamente em instantes."
+            : "Não encontrei esse código de evento. Confira os caracteres e tente de novo.";
+        setAuthMessage(message);
+        setStatus(message);
         return;
       }
 
       const organization = payload.organization as Organization;
+      setAuthMessage(null);
       setAccessCode(code);
       setUser({ id: `code-${code}`, email: `${code}@acesso.local` });
       setProfile({ id: `code-${code}`, email: null, full_name: "Equipe de vendas", role: "member" });
       setOrganizations([organization]);
       setActiveOrganizationId(organization.id);
+      setCashierName(getPreferredCashierName(organization));
       setGroups((payload.groups ?? []) as Group[]);
       setProducts((payload.products ?? []) as Product[]);
       setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
@@ -790,17 +1171,48 @@ export default function ArraiaDashboard() {
 
     const email = authForm.email.trim();
     const password = authForm.password;
+    const normalizedEmail = email.toLowerCase();
+    const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail);
 
-    if (!email || !password) {
-      setStatus("Informe email e senha.");
+    if (!email && !password) {
+      const message = "Preencha o email e a senha do administrador para continuar.";
+      setAuthMessage(message);
+      setStatus(message);
       return;
     }
 
-    if (
-      email.toLowerCase() !== officialAdmin.email ||
-      password !== officialAdmin.password
-    ) {
-      setStatus("Email ou senha de admin inválido. Use somente o admin oficial.");
+    if (!email) {
+      const message = "Digite o email do administrador para eu conferir o acesso.";
+      setAuthMessage(message);
+      setStatus(message);
+      return;
+    }
+
+    if (!emailLooksValid) {
+      const message = "E-mail inválido.";
+      setAuthMessage(message);
+      setStatus(message);
+      return;
+    }
+
+    if (!password) {
+      const message = "Faltou a senha do administrador. Preencha e tente novamente.";
+      setAuthMessage(message);
+      setStatus(message);
+      return;
+    }
+
+    if (normalizedEmail !== officialAdmin.email) {
+      const message = "E-mail inválido.";
+      setAuthMessage(message);
+      setStatus(message);
+      return;
+    }
+
+    if (password !== officialAdmin.password) {
+      const message = "Senha Incorreta.";
+      setAuthMessage(message);
+      setStatus(message);
       return;
     }
 
@@ -815,12 +1227,14 @@ export default function ArraiaDashboard() {
     setStatus("Entrando como admin oficial...");
     setIsSubmittingAuth(false);
 
+    setAuthMessage(null);
     setAccessCode("");
     setUser({ id: officialAdmin.id, email: officialAdmin.email });
     setProfile(adminProfile);
     setOrganizations([]);
     setAccessCodes([]);
     setActiveOrganizationId("");
+    setCashierName("");
     setAccessCodeForm((current) => ({ ...current, organizationId: "" }));
     setGroups((current) => (current.length ? current : demoGroups));
     setProducts((current) => (current.length ? current : demoProducts));
@@ -828,12 +1242,13 @@ export default function ArraiaDashboard() {
     setRecentSales((current) => (current.length ? current : demoRecentSales));
     setActiveView("admin");
     setAuthForm(initialAuthForm);
-    setStatus("Admin oficial conectado. Você pode criar festas, códigos e gerenciar usuários.");
+    setStatus("Admin oficial conectado. Crie um evento para começar e depois selecione-o no cabeçalho.");
   }
 
   async function signOut() {
     setAuthMode("sign-in");
     setAuthForm(initialAuthForm);
+    setAuthMessage(null);
     setAccessCode("");
     setOrganizationCashiers([""]);
 
@@ -848,6 +1263,7 @@ export default function ArraiaDashboard() {
     setGroups(demoGroups);
     setReport(demoReport);
     setRecentSales(demoRecentSales);
+    setCashierName("");
     setActiveView("cashier");
     setIsAuthReady(true);
     setStatus("Sessão encerrada.");
@@ -864,7 +1280,7 @@ export default function ArraiaDashboard() {
     const cashierNames = organizationCashiers.map((item) => item.trim()).filter(Boolean);
 
     if (!name || !slug) {
-      setStatus("Informe nome e sigla da festa.");
+      setStatus("Informe nome e sigla do evento.");
       return;
     }
 
@@ -888,6 +1304,7 @@ export default function ArraiaDashboard() {
       setOrganizationForm(initialOrganizationForm);
       setOrganizationCashiers([""]);
       setActiveOrganizationId(organization.id);
+      setCashierName(getPreferredCashierName(organization));
       setAccessCodeForm((current) => ({ ...current, organizationId: organization.id }));
       setStatus("Organização criada no modo demonstrativo.");
       return;
@@ -896,7 +1313,15 @@ export default function ArraiaDashboard() {
     setIsCreatingOrganization(true);
     const result = await supabase
       .from("organizations")
-      .insert({ name, slug, created_by: user?.id ?? null })
+      .insert({
+        name,
+        slug,
+        created_by: user?.id ?? null,
+        event_date: eventDate,
+        responsible_group: responsibleGroup,
+        cashier_names: cashierNames,
+        is_active: true,
+      })
       .select()
       .single();
     setIsCreatingOrganization(false);
@@ -924,7 +1349,7 @@ export default function ArraiaDashboard() {
     );
 
     if (!organizationId || !organization) {
-      setStatus("Selecione a festa para gerar o código.");
+      setStatus("Selecione o evento para gerar o código.");
       return;
     }
 
@@ -933,7 +1358,7 @@ export default function ArraiaDashboard() {
         code: existingCodeForOrganization.code,
         organizationId,
       });
-      setStatus(`Esta festa já tem um código ativo: ${existingCodeForOrganization.code}.`);
+      setStatus(`Este evento já tem um código ativo: ${existingCodeForOrganization.code}.`);
       return;
     }
 
@@ -994,10 +1419,22 @@ export default function ArraiaDashboard() {
       <AuthScreen
         authForm={authForm}
         authMode={authMode}
+        authMessage={authMessage}
         isSubmitting={isSubmittingAuth}
         status={status}
-        onChangeForm={(field, value) => setAuthForm((current) => ({ ...current, [field]: value }))}
-        onChangeMode={setAuthMode}
+        onChangeForm={(field, value) => {
+          setAuthMessage(null);
+          setStatus(getAuthGuidance(authMode));
+          setAuthForm((current) => ({
+            ...current,
+            [field]: field === "accessCode" ? normalizeAccessCodeInput(value) : value,
+          }));
+        }}
+        onChangeMode={(mode) => {
+          setAuthMessage(null);
+          setStatus(getAuthGuidance(mode));
+          setAuthMode(mode);
+        }}
         onSubmit={submitAuth}
       />
     );
@@ -1039,7 +1476,7 @@ export default function ArraiaDashboard() {
                 <div className="flex items-center gap-2">
                   <BrandMark />
                   <p className="sr-only">
-                    Sistema Arraiá
+                    Gestão de Eventos
                   </p>
                 </div>
                 <p className="mt-1 line-clamp-2 text-xs text-slate-500 sm:line-clamp-none">
@@ -1048,29 +1485,15 @@ export default function ArraiaDashboard() {
               </div>
             </div>
             <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:flex-wrap sm:items-center lg:w-auto lg:justify-end">
-              {organizations.length > 0 && (
-                <select
-                  value={activeOrganizationId}
-                  onChange={(event) => changeActiveOrganization(event.target.value)}
-                  className="col-span-2 h-9 min-w-0 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 sm:w-56"
-                  aria-label="Festa selecionada"
-                >
-                  <option value="">Selecione a festa</option>
-                  {organizations
-                    .filter((organization) => organization.is_active !== false)
-                    .map((organization) => (
-                    <option key={organization.id} value={organization.id}>
-                      {organization.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <SearchBox value={searchTerm} onChange={setSearchTerm} placeholder="Buscar" compact />
-              <input
-                value={cashierName}
-                onChange={(event) => setCashierName(event.target.value)}
-                className="h-9 min-w-0 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 sm:w-32"
-                aria-label="Nome do caixa"
+              <OrganizationSwitcher
+                activeOrganizationId={activeOrganizationId}
+                organizations={organizations}
+                onChange={changeActiveOrganization}
+              />
+              <CashierSwitcher
+                cashierName={cashierName}
+                cashierNames={activeCashierNames}
+                onChange={setCashierName}
               />
               <button
                 type="button"
@@ -1132,7 +1555,7 @@ export default function ArraiaDashboard() {
             <div className="grid gap-5 xl:grid-cols-[1fr_380px]">
               <section className="space-y-4">
                 <SectionHeader title="Venda rápida" />
-                <ProductGrid products={filteredProducts} onProductClick={addToCart} mode="sale" />
+                <ProductGrid products={activeProducts} onProductClick={addToCart} mode="sale" />
               </section>
               <CartPanel
                 cart={cart}
@@ -1151,13 +1574,20 @@ export default function ArraiaDashboard() {
             <section className="space-y-4">
               <SectionHeader title="Gerenciar produtos" />
               <ProductForm
-                groups={groups}
                 isCreatingProduct={isCreatingProduct}
                 productForm={productForm}
                 onSubmit={createProduct}
                 onUpdate={updateProductForm}
               />
-              <ProductGrid products={filteredProducts} mode="manage" />
+              <EditableProductList
+                products={activeProducts}
+                productDrafts={productDrafts}
+                savingProductId={savingProductId}
+                onChangeDraft={updateProductDraft}
+                onSave={saveProductChanges}
+                onResetDraft={resetProductDraft}
+                onStatusChange={setStatus}
+              />
             </section>
           )}
 
@@ -1256,7 +1686,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center">
       <p className="text-sm font-black uppercase tracking-normal text-[#0b3a75] sm:text-base">
-        Sistema Arraiá
+        Gestão de Eventos
       </p>
     </div>
   );
@@ -1265,6 +1695,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 function AuthScreen({
   authForm,
   authMode,
+  authMessage,
   isSubmitting,
   onChangeForm,
   onChangeMode,
@@ -1273,6 +1704,7 @@ function AuthScreen({
 }: {
   authForm: typeof initialAuthForm;
   authMode: AuthMode;
+  authMessage: string | null;
   isSubmitting: boolean;
   onChangeForm: (field: keyof typeof initialAuthForm, value: string) => void;
   onChangeMode: (mode: AuthMode) => void;
@@ -1305,7 +1737,7 @@ function AuthScreen({
               O controle total do seu evento na palma da mão.
             </h1>
             <p className="mt-5 max-w-xl font-[family-name:var(--font-display)] text-base font-medium leading-8 text-blue-100/78">
-              Monitore o caixa em tempo real, gerencie estoques e tenha relatórios precisos sem complicação. Transforme a gestão da sua festa em uma experiência profissional.
+              Monitore o caixa em tempo real, gerencie estoques e tenha relatórios precisos sem complicação. Transforme a gestão do seu evento em uma experiência profissional.
             </p>
           </div>
           <div className="w-full rounded-md border border-white/16 bg-white/10 p-4 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-5">
@@ -1315,7 +1747,7 @@ function AuthScreen({
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-black uppercase tracking-normal text-white">
-                  Arraia Parafuso Solto
+                  Gestão de Eventos
                 </p>
                 <p className="mt-1 line-clamp-2 text-sm text-blue-100/70">{status}</p>
               </div>
@@ -1342,12 +1774,16 @@ function AuthScreen({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="mt-5 space-y-3">
+        <form onSubmit={onSubmit} noValidate className="mt-5 space-y-3">
           {isCodeMode ? (
             <input
               value={authForm.accessCode}
               onChange={(event) => onChangeForm("accessCode", event.target.value)}
-              placeholder="Código da festa"
+              placeholder="Código do evento"
+              maxLength={ACCESS_CODE_LENGTH}
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
               className="h-11 w-full rounded-md border border-white/12 bg-white/10 px-3 text-sm text-white outline-none transition placeholder:text-blue-100/45 focus:border-[#a78bfa] focus:ring-2 focus:ring-[#a78bfa]/20"
             />
           ) : (
@@ -1383,6 +1819,15 @@ function AuthScreen({
                 </button>
               </label>
             </>
+          )}
+          {authMessage && (
+            <div
+              role="alert"
+              aria-live="polite"
+              className="rounded-md border border-rose-300/35 bg-rose-500/12 px-3 py-2 text-sm leading-6 text-rose-100"
+            >
+              {authMessage}
+            </div>
           )}
           <button
             type="submit"
@@ -1499,13 +1944,13 @@ function AdminPanel({
         <form onSubmit={onCreateOrganization} className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
           <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
             <Building2 size={17} />
-            Criar festa
+            Criar evento
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <input
               value={organizationForm.name}
               onChange={(event) => onChangeOrganizationForm("name", event.target.value)}
-              placeholder="Nome da festa"
+              placeholder="Nome do evento"
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             />
             <input
@@ -1513,28 +1958,28 @@ function AdminPanel({
               onChange={(event) => onChangeOrganizationForm("eventDate", event.target.value)}
               type="date"
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
-              aria-label="Data da festa"
+              aria-label="Data do evento"
             />
             <input
               value={organizationForm.slug}
               onChange={(event) =>
                 onChangeOrganizationForm("slug", event.target.value.toUpperCase().slice(0, 3))
               }
-              placeholder="Sigla da festa"
+              placeholder="Sigla do evento"
               maxLength={3}
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             />
             <input
               value={organizationForm.responsibleGroup}
               onChange={(event) => onChangeOrganizationForm("responsibleGroup", event.target.value)}
-              placeholder="Responsáveis pela festa"
+              placeholder="Responsáveis pelo evento"
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             />
           </div>
           <div className="mt-4 rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-bold text-[#10233f]">Caixas da festa</p>
+                <p className="text-sm font-bold text-[#10233f]">Caixas do evento</p>
                 <p className="mt-1 text-xs text-slate-500">Adicione os vendedores que vão operar cada caixa.</p>
               </div>
               <button
@@ -1576,7 +2021,7 @@ function AdminPanel({
               disabled={isCreatingOrganization}
               className="h-10 w-full rounded-md bg-[#2563eb] text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {isCreatingOrganization ? "Criando..." : "Criar festa"}
+              {isCreatingOrganization ? "Criando..." : "Criar evento"}
             </button>
           </div>
         </form>
@@ -1588,7 +2033,7 @@ function AdminPanel({
               Gerar código único
             </div>
             <p className="mt-1 text-xs leading-5 text-[#3f5f8f]">
-              Libera o acesso da equipe para a festa selecionada.
+              Libera o acesso da equipe para o evento selecionado.
             </p>
           </div>
           <div className="space-y-3 p-4">
@@ -1597,7 +2042,7 @@ function AdminPanel({
               onChange={(event) => onChangeAccessCodeForm("organizationId", event.target.value)}
               className="h-10 w-full rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
             >
-              <option value="">Selecione a festa</option>
+              <option value="">Selecione o evento</option>
               {organizationsWithoutAccessCode.map((organization) => (
                 <option key={organization.id} value={organization.id}>
                   {organization.name}
@@ -1605,11 +2050,11 @@ function AdminPanel({
               ))}
             </select>
             <p className="text-xs leading-5 text-slate-500">
-              O código será gerado automaticamente com 8 letras e números. Cada festa pode ter apenas um código ativo.
+              O código será gerado automaticamente com 8 letras e números. Cada evento pode ter apenas um código ativo.
             </p>
             <div className="rounded-md border border-dashed border-[#bfdbfe] bg-[#f8fbff] px-3 py-3">
               <p className="text-center text-xs font-bold uppercase text-slate-400">
-                {visibleAccessCode ? "Código da festa" : "Código ainda não gerado"}
+                {visibleAccessCode ? "Código do evento" : "Código ainda não gerado"}
               </p>
               <div className="mt-2 flex items-center justify-center gap-2">
                 <p className="min-h-7 font-mono text-lg font-black tracking-[0.16em] text-[#1d4ed8]">
@@ -1707,7 +2152,7 @@ function AdminPanel({
                   type="button"
                   onClick={() => onDeleteOrganization(organization.id)}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 hover:text-red-700"
-                  aria-label={`Excluir festa ${organization.name}`}
+                  aria-label={`Excluir evento ${organization.name}`}
                   title="Excluir"
                 >
                   <Trash2 size={13} />
@@ -1716,7 +2161,7 @@ function AdminPanel({
             </div>
           ))}
           {organizations.length === 0 && (
-            <p className="py-4 text-sm text-slate-500">Nenhuma festa criada ainda.</p>
+            <p className="py-4 text-sm text-slate-500">Nenhum evento criado ainda.</p>
           )}
         </div>
       </div>
@@ -1829,40 +2274,81 @@ function SectionHeader({
   );
 }
 
-function SearchBox({
-  compact = false,
+function OrganizationSwitcher({
+  activeOrganizationId,
   onChange,
-  placeholder,
-  value,
+  organizations,
 }: {
-  compact?: boolean;
-  onChange: (value: string) => void;
-  placeholder: string;
-  value: string;
+  activeOrganizationId: string;
+  onChange: (organizationId: string) => void;
+  organizations: Organization[];
 }) {
+  const availableOrganizations = organizations.filter((organization) => organization.is_active !== false);
+  const hasOrganizations = availableOrganizations.length > 0;
+
   return (
-    <label className={`flex min-w-0 items-center rounded-md border border-[#d7e3f8] bg-[#f8fbff] text-sm text-slate-600 transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15 ${compact ? "h-9 w-full sm:w-48" : "h-10 w-full sm:w-80"}`}>
-      <input
-        value={value}
+    <label className="relative col-span-2 flex h-9 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-[#f8fbff] text-sm text-slate-600 transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15 sm:w-64">
+      <select
+        value={activeOrganizationId}
         onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="h-full w-full bg-transparent px-3 outline-none"
-      />
-      <span className="flex h-full w-11 items-center justify-center rounded-r-md bg-[#2563eb] text-white">
-        <Search size={15} />
+        disabled={!hasOrganizations}
+        className="h-full w-full appearance-none bg-transparent px-3 pr-9 text-[#10233f] outline-none disabled:cursor-not-allowed disabled:text-slate-400"
+        aria-label="Festa selecionada"
+      >
+        <option value="">{hasOrganizations ? "Selecione o evento" : "Nenhum evento criado"}</option>
+        {availableOrganizations.map((organization) => (
+          <option key={organization.id} value={organization.id}>
+            {organization.name}
+          </option>
+        ))}
+      </select>
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[#5b7db2]">
+        <ChevronDown size={16} />
+      </span>
+    </label>
+  );
+}
+
+function CashierSwitcher({
+  cashierName,
+  cashierNames,
+  onChange,
+}: {
+  cashierName: string;
+  cashierNames: string[];
+  onChange: (cashierName: string) => void;
+}) {
+  const hasCashiers = cashierNames.length > 0;
+
+  return (
+    <label className="relative flex h-9 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-[#f8fbff] text-sm text-slate-600 transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15 sm:w-44">
+      <select
+        value={cashierName}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={!hasCashiers}
+        className="h-full w-full appearance-none bg-transparent px-3 pr-9 text-[#10233f] outline-none disabled:cursor-not-allowed disabled:text-slate-400"
+        aria-label="Vendedor do caixa"
+      >
+        <option value="">{hasCashiers ? "Selecione o vendedor" : "Sem vendedores"}</option>
+        {cashierNames.map((cashier) => (
+          <option key={cashier} value={cashier}>
+            {cashier}
+          </option>
+        ))}
+      </select>
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[#5b7db2]">
+        <ChevronDown size={16} />
       </span>
     </label>
   );
 }
 
 function ProductForm({
-  groups,
   isCreatingProduct,
   onSubmit,
   onUpdate,
   productForm,
 }: {
-  groups: Group[];
   isCreatingProduct: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUpdate: (field: keyof typeof initialProductForm, value: string) => void;
@@ -1872,22 +2358,372 @@ function ProductForm({
     <form onSubmit={onSubmit} className="grid gap-3 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-md shadow-[#0b3a75]/5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       <input value={productForm.name} onChange={(event) => onUpdate("name", event.target.value)} placeholder="Produto" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15 xl:col-span-2" />
       <input value={productForm.category} onChange={(event) => onUpdate("category", event.target.value)} placeholder="Categoria" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <select value={productForm.groupId} onChange={(event) => onUpdate("groupId", event.target.value)} className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15">
-        <option value="">Grupo</option>
-        {groups.map((group) => (
-          <option key={group.id} value={group.id}>
-            {group.acronym ? `${group.acronym} - ${group.name}` : group.name}
-          </option>
-        ))}
-      </select>
-      <input value={productForm.salePrice} onChange={(event) => onUpdate("salePrice", event.target.value)} placeholder="Valor de venda" inputMode="decimal" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <input value={productForm.unitCost} onChange={(event) => onUpdate("unitCost", event.target.value)} placeholder="Custo para fazer" inputMode="decimal" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
-      <input value={productForm.stockQuantity} onChange={(event) => onUpdate("stockQuantity", event.target.value)} placeholder="Estoque" inputMode="numeric" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <input value={productForm.responsibleName} onChange={(event) => onUpdate("responsibleName", event.target.value)} placeholder="Responsável" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
+      <label className="flex h-10 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-white text-sm transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15">
+        <span className="px-3 font-semibold text-slate-500">R$</span>
+        <input value={productForm.salePrice} onChange={(event) => onUpdate("salePrice", event.target.value)} placeholder="Valor de venda" inputMode="numeric" className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none" />
+      </label>
+      <label className="flex h-10 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-white text-sm transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15">
+        <span className="px-3 font-semibold text-slate-500">R$</span>
+        <input value={productForm.unitCost} onChange={(event) => onUpdate("unitCost", event.target.value)} placeholder="Custo" inputMode="numeric" className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none" />
+      </label>
+      <input value={productForm.stockQuantity} onChange={(event) => onUpdate("stockQuantity", event.target.value)} placeholder="Estoque" inputMode="numeric" pattern="[0-9]*" className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15" />
       <button type="submit" disabled={isCreatingProduct} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#2563eb] px-4 text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300 xl:col-span-2">
         <Plus size={15} />
         {isCreatingProduct ? "Cadastrando..." : "Cadastrar produto"}
       </button>
     </form>
+  );
+}
+
+function EditableProductList({
+  onChangeDraft,
+  onResetDraft,
+  onSave,
+  onStatusChange,
+  productDrafts,
+  products,
+  savingProductId,
+}: {
+  onChangeDraft: (product: Product, field: keyof ProductDraft, value: string) => void;
+  onResetDraft: (productId: string) => void;
+  onSave: (
+    productId: string,
+    draftOverride?: ProductDraft,
+    promotionOverride?: ProductPromotionUpdate,
+  ) => Promise<void>;
+  onStatusChange: (message: string) => void;
+  productDrafts: Record<string, ProductDraft>;
+  products: Product[];
+  savingProductId: string | null;
+}) {
+  const [openPanels, setOpenPanels] = useState<Record<string, "edit" | "promo" | undefined>>({});
+  const [promoDrafts, setPromoDrafts] = useState<Record<string, ProductPromotionDraft>>({});
+
+  if (!products.length) {
+    return (
+      <div className="rounded-md border border-dashed border-[#bfd4f2] bg-white px-4 py-5 text-sm text-slate-500">
+        Os produtos cadastrados vão aparecer aqui para edição rápida.
+      </div>
+    );
+  }
+
+  function togglePanel(productId: string, panel: "edit" | "promo") {
+    setOpenPanels((current) => ({
+      ...current,
+      [productId]: current[productId] === panel ? undefined : panel,
+    }));
+  }
+
+  function updatePromoDraft(product: Product, field: keyof ProductPromotionDraft, value: string) {
+    setPromoDrafts((current) => ({
+      ...current,
+      [product.id]: {
+        ...(current[product.id] ?? createPromotionDraft(product)),
+        [field]:
+          field === "value"
+            ? normalizeCurrencyInput(value)
+            : field === "minQuantity"
+              ? normalizeIntegerInput(value)
+              : value,
+      },
+    }));
+  }
+
+  async function savePromotion(product: Product) {
+    const promoDraft = promoDrafts[product.id] ?? createPromotionDraft(product);
+    const promoValue = parseNumber(promoDraft.value);
+
+    if (!Number.isFinite(promoValue) || promoValue < 0) {
+      onStatusChange("Informe um valor válido para a promoção.");
+      return;
+    }
+
+    const baseDraft = productDrafts[product.id] ?? createProductDraft(product);
+
+    if (promoDraft.mode === "discount") {
+      const minQuantity = Number.parseInt(promoDraft.minQuantity, 10);
+
+      if (!Number.isInteger(minQuantity) || minQuantity < 2) {
+        onStatusChange("Informe a partir de quantas unidades o desconto vai valer.");
+        return;
+      }
+
+      if (!Number.isFinite(promoValue) || promoValue <= 0) {
+        onStatusChange("Informe quanto de desconto sera aplicado em cada item.");
+        return;
+      }
+
+      await onSave(product.id, baseDraft, {
+        promo_min_quantity: minQuantity,
+        promo_discount_amount: promoValue,
+      });
+      setPromoDrafts((current) => {
+        const next = { ...current };
+        delete next[product.id];
+        return next;
+      });
+      setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+      return;
+    }
+
+    const currentSalePrice = parseNumber(baseDraft.salePrice);
+
+    if (!Number.isFinite(currentSalePrice)) {
+      onStatusChange("Não consegui aplicar a promoção porque o valor de venda atual está inválido.");
+      return;
+    }
+
+    const nextSalePrice =
+      promoDraft.mode === "price"
+        ? promoValue
+        : Math.max(0, currentSalePrice - promoValue);
+
+    const nextDraft: ProductDraft = {
+      ...baseDraft,
+      salePrice: formatCurrencyInputFromNumber(nextSalePrice),
+    };
+
+    await onSave(product.id, nextDraft, {
+      promo_min_quantity: null,
+      promo_discount_amount: null,
+    });
+    setPromoDrafts((current) => {
+      const next = { ...current };
+      delete next[product.id];
+      return next;
+    });
+    setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+  }
+
+  return (
+    <div className="space-y-3">
+      <SectionHeader title="Produtos salvos" />
+      <div className="grid gap-3">
+        {products.map((product) => {
+          const draft = productDrafts[product.id] ?? createProductDraft(product);
+          const openPanel = openPanels[product.id];
+          const promoDraft = promoDrafts[product.id] ?? createPromotionDraft(product);
+          const promotionSummary = getPromotionSummary(product);
+
+          return (
+            <article
+              key={product.id}
+              className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5"
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <p className="break-words text-base font-bold text-[#10233f]">{product.name}</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {product.category} - Responsável: {product.group?.name ?? "Sem responsável"}
+                  </p>
+                  {promotionSummary && (
+                    <p className="mt-2 text-xs font-semibold text-[#2563eb]">{promotionSummary}</p>
+                  )}
+                </div>
+                <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
+                    <p className="text-slate-500">Venda</p>
+                    <p className="font-bold text-[#1d4ed8]">{currency.format(product.sale_price)}</p>
+                  </div>
+                  <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
+                    <p className="text-slate-500">Custo</p>
+                    <p className="font-semibold">{currency.format(product.unit_cost)}</p>
+                  </div>
+                  <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
+                    <p className="text-slate-500">Estoque</p>
+                    <p className="font-semibold">{product.stock_quantity}</p>
+                  </div>
+                  <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
+                    <p className="text-slate-500">Lucro</p>
+                    <p className="font-semibold text-[#2563eb]">
+                      {currency.format(product.sale_price - product.unit_cost)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => togglePanel(product.id, "edit")}
+                  className="inline-flex h-10 items-center justify-center rounded-md border border-[#d7e3f8] bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-[#2563eb] hover:text-[#1d4ed8]"
+                >
+                  Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => togglePanel(product.id, "promo")}
+                  className="inline-flex h-10 items-center justify-center rounded-md border border-[#d7e3f8] bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-[#2563eb] hover:text-[#1d4ed8]"
+                >
+                  Promoção
+                </button>
+              </div>
+
+              {openPanel === "edit" && (
+                <div className="mt-4 space-y-3 rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.3fr_1fr_1fr_1fr_120px_auto]">
+                    <input
+                      value={draft.name}
+                      onChange={(event) => onChangeDraft(product, "name", event.target.value)}
+                      placeholder="Produto"
+                      className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                    <input
+                      value={draft.category}
+                      onChange={(event) => onChangeDraft(product, "category", event.target.value)}
+                      placeholder="Categoria"
+                      className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                    <input
+                      value={draft.responsibleName}
+                      onChange={(event) => onChangeDraft(product, "responsibleName", event.target.value)}
+                      placeholder="Responsável"
+                      className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                    <label className="flex h-10 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-white text-sm transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15">
+                      <span className="px-3 font-semibold text-slate-500">R$</span>
+                      <input
+                        value={draft.salePrice}
+                        onChange={(event) => onChangeDraft(product, "salePrice", event.target.value)}
+                        placeholder="Valor de venda"
+                        inputMode="numeric"
+                        className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none"
+                      />
+                    </label>
+                    <label className="flex h-10 min-w-0 items-center rounded-md border border-[#d7e3f8] bg-white text-sm transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15">
+                      <span className="px-3 font-semibold text-slate-500">R$</span>
+                      <input
+                        value={draft.unitCost}
+                        onChange={(event) => onChangeDraft(product, "unitCost", event.target.value)}
+                        placeholder="Custo"
+                        inputMode="numeric"
+                        className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none"
+                      />
+                    </label>
+                    <input
+                      value={draft.stockQuantity}
+                      onChange={(event) => onChangeDraft(product, "stockQuantity", event.target.value)}
+                      placeholder="Estoque"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      className="h-10 min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-slate-500">
+                      Salve aqui para atualizar o produto no caixa também.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onResetDraft(product.id);
+                          setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+                        }}
+                        className="inline-flex h-10 items-center justify-center rounded-md border border-[#d7e3f8] bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-[#f0f6ff]"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void (async () => {
+                            await onSave(product.id);
+                            setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+                          })()
+                        }
+                        disabled={savingProductId === product.id}
+                        className="inline-flex h-10 items-center justify-center rounded-md bg-[#2563eb] px-4 text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {savingProductId === product.id ? "Salvando..." : "Salvar alterações"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {openPanel === "promo" && (
+                <div className="mt-4 space-y-3 rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updatePromoDraft(product, "mode", "price")}
+                      className={`inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-bold transition ${
+                        promoDraft.mode === "price"
+                          ? "border-[#2563eb] bg-[#2563eb] text-white"
+                          : "border-[#d7e3f8] bg-white text-slate-700 hover:border-[#2563eb]"
+                      }`}
+                    >
+                      Novo valor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updatePromoDraft(product, "mode", "discount")}
+                      className={`inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-bold transition ${
+                        promoDraft.mode === "discount"
+                          ? "border-[#2563eb] bg-[#2563eb] text-white"
+                          : "border-[#d7e3f8] bg-white text-slate-700 hover:border-[#2563eb]"
+                      }`}
+                    >
+                      Desconto em R$
+                    </button>
+                  </div>
+                  {promoDraft.mode === "discount" && (
+                    <input
+                      value={promoDraft.minQuantity}
+                      onChange={(event) => updatePromoDraft(product, "minQuantity", event.target.value)}
+                      placeholder="A partir de quantos"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      className="h-10 max-w-xs min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                  )}
+                  <label className="flex h-10 max-w-xs min-w-0 items-center rounded-md border border-[#d7e3f8] bg-white text-sm transition focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-[#2563eb]/15">
+                    <span className="px-3 font-semibold text-slate-500">R$</span>
+                    <input
+                      value={promoDraft.value}
+                      onChange={(event) => updatePromoDraft(product, "value", event.target.value)}
+                      placeholder={promoDraft.mode === "price" ? "Novo valor" : "Quanto de desconto"}
+                      inputMode="numeric"
+                      className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none"
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-slate-500">
+                      A promoção atualiza o valor de venda e já deixa o produto pronto para vender.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPromoDrafts((current) => {
+                            const next = { ...current };
+                            delete next[product.id];
+                            return next;
+                          });
+                          setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+                        }}
+                        className="inline-flex h-10 items-center justify-center rounded-md border border-[#d7e3f8] bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-[#f0f6ff]"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void savePromotion(product)}
+                        disabled={savingProductId === product.id}
+                        className="inline-flex h-10 items-center justify-center rounded-md bg-[#2563eb] px-4 text-sm font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {savingProductId === product.id ? "Salvando..." : "Salvar promoção"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1903,14 +2739,18 @@ function ProductGrid({
   return (
     <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
       {products.map((product, index) => {
+        const promotionSummary = getPromotionSummary(product);
         const content = (
           <>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="break-words font-bold text-[#10233f]">{product.name}</p>
                 <p className="mt-1 text-sm text-slate-500">
-                  {product.category} - {product.group?.acronym ?? product.group?.name ?? "Sem grupo"}
+                  {product.category} - Responsável: {product.group?.name ?? "Sem responsável"}
                 </p>
+                {promotionSummary && (
+                  <p className="mt-2 text-xs font-semibold text-[#2563eb]">{promotionSummary}</p>
+                )}
               </div>
               <span className="w-fit shrink-0 rounded bg-[#eaf3ff] px-2 py-1 text-sm font-black text-[#1d4ed8]">
                 {currency.format(product.sale_price)}
@@ -1993,37 +2833,54 @@ function CartPanel({
             Selecione produtos para montar a venda.
           </div>
         ) : (
-          cart.map((item) => (
-            <div key={item.product.id} className="rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="break-words font-semibold">{item.product.name}</p>
-                  <p className="text-sm text-slate-500">
-                    {currency.format(item.product.sale_price)} cada
+          cart.map((item) => {
+            const effectiveUnitPrice = getEffectiveUnitPrice(item.product, item.quantity);
+            const promotion = getProductPromotion(item.product);
+            const promotionReached = Boolean(
+              promotion && item.quantity >= promotion.minQuantity,
+            );
+
+            return (
+              <div key={item.product.id} className="rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="break-words font-semibold">{item.product.name}</p>
+                    <p className="text-sm text-slate-500">
+                      {currency.format(effectiveUnitPrice)} cada
+                    </p>
+                    {promotion && (
+                      <p className="mt-1 text-xs font-medium text-[#2563eb]">
+                        {promotionReached
+                          ? `Desconto ativo: -${currency.format(promotion.discountAmount)} por unidade`
+                          : `A partir de ${promotion.minQuantity} unidades: -${currency.format(
+                              promotion.discountAmount,
+                            )} por unidade`}
+                      </p>
+                    )}
+                  </div>
+                  <p className="shrink-0 font-bold">
+                    {currency.format(effectiveUnitPrice * item.quantity)}
                   </p>
                 </div>
-                <p className="shrink-0 font-bold">
-                  {currency.format(item.product.sale_price * item.quantity)}
-                </p>
+                <div className="mt-3 flex items-center gap-2">
+                  <button type="button" aria-label="Diminuir quantidade" onClick={() => onChangeQuantity(item.product.id, -1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] bg-white transition hover:border-[#2563eb]">
+                    <Minus size={16} />
+                  </button>
+                  <span className="flex h-9 min-w-12 items-center justify-center rounded-md bg-white px-3 text-sm font-bold text-[#1d4ed8]">
+                    {item.quantity}
+                  </span>
+                  <button type="button" aria-label="Aumentar quantidade" onClick={() => onChangeQuantity(item.product.id, 1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] bg-white transition hover:border-[#2563eb]">
+                    <Plus size={16} />
+                  </button>
+                </div>
               </div>
-              <div className="mt-3 flex items-center gap-2">
-                <button type="button" aria-label="Diminuir quantidade" onClick={() => onChangeQuantity(item.product.id, -1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] bg-white transition hover:border-[#2563eb]">
-                  <Minus size={16} />
-                </button>
-                <span className="flex h-9 min-w-12 items-center justify-center rounded-md bg-white px-3 text-sm font-bold text-[#1d4ed8]">
-                  {item.quantity}
-                </span>
-                <button type="button" aria-label="Aumentar quantidade" onClick={() => onChangeQuantity(item.product.id, 1)} className="flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] bg-white transition hover:border-[#2563eb]">
-                  <Plus size={16} />
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-2 min-[420px]:grid-cols-4">
-        {Object.entries(paymentLabels).map(([value, label]) => (
+        {paymentOptions.map(({ value, label }) => (
           <button
             key={value}
             type="button"
