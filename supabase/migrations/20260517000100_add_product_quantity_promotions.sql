@@ -1,6 +1,10 @@
 alter table public.products
   add column if not exists promo_min_quantity integer,
-  add column if not exists promo_discount_amount numeric(10, 2);
+  add column if not exists promo_discount_amount numeric(10, 2),
+  add column if not exists original_sale_price numeric(10, 2);
+
+alter table public.sale_items
+  alter column unit_price type numeric(12, 6);
 
 alter table public.products
   drop constraint if exists products_promo_min_quantity_check;
@@ -30,7 +34,11 @@ declare
   payload_organization_id uuid;
   actor_user_id uuid;
   access_code text;
-  effective_unit_price numeric(10, 2);
+  effective_unit_price numeric(12, 6);
+  line_total numeric(10, 2);
+  promotional_package_total numeric(10, 2);
+  promotional_package_count integer;
+  regular_unit_count integer;
   v_gross_total numeric(10, 2) := 0;
   v_cost_total numeric(10, 2) := 0;
   v_profit_total numeric(10, 2) := 0;
@@ -95,16 +103,21 @@ begin
     end if;
 
     effective_unit_price := current_product.sale_price;
+    line_total := requested_quantity * current_product.sale_price;
 
     if current_product.promo_min_quantity is not null
       and current_product.promo_discount_amount is not null
       and current_product.promo_min_quantity >= 2
       and current_product.promo_discount_amount > 0
       and requested_quantity >= current_product.promo_min_quantity then
-      effective_unit_price := greatest(
+      promotional_package_count := requested_quantity / current_product.promo_min_quantity;
+      regular_unit_count := requested_quantity % current_product.promo_min_quantity;
+      promotional_package_total := greatest(
         0,
-        current_product.sale_price - current_product.promo_discount_amount
+        current_product.promo_min_quantity * current_product.sale_price - current_product.promo_discount_amount
       );
+      line_total := promotional_package_count * promotional_package_total + regular_unit_count * current_product.sale_price;
+      effective_unit_price := line_total / requested_quantity;
     end if;
 
     insert into public.sale_items (
@@ -147,9 +160,9 @@ begin
       'Venda registrada no caixa'
     );
 
-    v_gross_total := v_gross_total + (requested_quantity * effective_unit_price);
+    v_gross_total := v_gross_total + line_total;
     v_cost_total := v_cost_total + (requested_quantity * current_product.unit_cost);
-    v_profit_total := v_profit_total + (requested_quantity * (effective_unit_price - current_product.unit_cost));
+    v_profit_total := v_profit_total + (line_total - (requested_quantity * current_product.unit_cost));
   end loop;
 
   update public.sales

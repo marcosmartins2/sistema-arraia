@@ -129,6 +129,7 @@ type ProductPromotionDraft = {
 type ProductPromotionUpdate = {
   promo_min_quantity: number | null;
   promo_discount_amount: number | null;
+  original_sale_price?: number | null;
 };
 
 const ACCESS_CODE_LENGTH = 8;
@@ -232,27 +233,33 @@ function createPromotionDraft(product: Product): ProductPromotionDraft {
 
   if (!promotion) {
     return {
-      mode: "price",
-      value: formatCurrencyInputFromNumber(product.sale_price),
+      mode: "discount",
+      value: "",
       minQuantity: "",
     };
   }
 
   return {
     mode: "discount",
-    value: formatCurrencyInputFromNumber(promotion.discountAmount),
+    value: formatCurrencyInputFromNumber(product.sale_price * promotion.minQuantity - promotion.discountAmount),
     minQuantity: String(promotion.minQuantity),
   };
 }
 
-function getEffectiveUnitPrice(product: Product, quantity: number) {
+function getPromotionalPackageTotal(product: Product, promotion: NonNullable<ReturnType<typeof getProductPromotion>>) {
+  return Math.max(0, product.sale_price * promotion.minQuantity - promotion.discountAmount);
+}
+
+function getProductLineTotal(product: Product, quantity: number) {
   const promotion = getProductPromotion(product);
 
   if (!promotion || quantity < promotion.minQuantity) {
-    return product.sale_price;
+    return product.sale_price * quantity;
   }
 
-  return Math.max(0, product.sale_price - promotion.discountAmount);
+  const promotionalPackages = Math.floor(quantity / promotion.minQuantity);
+
+  return quantity * product.sale_price - promotionalPackages * promotion.discountAmount;
 }
 
 function getPromotionSummary(product: Product) {
@@ -262,9 +269,9 @@ function getPromotionSummary(product: Product) {
     return null;
   }
 
-  return `Promoção: a partir de ${promotion.minQuantity} unidades, desconto de ${currency.format(
-    promotion.discountAmount,
-  )} por item.`;
+  const promotionalTotal = getPromotionalPackageTotal(product, promotion);
+
+  return `Promoção: ${promotion.minQuantity} por ${currency.format(promotionalTotal)}.`;
 }
 
 function getPreferredCashierName(
@@ -576,14 +583,11 @@ export default function ArraiaDashboard() {
         };
 
   const cartTotal = cart.reduce((total, item) => {
-    return total + item.quantity * getEffectiveUnitPrice(item.product, item.quantity);
+    return total + getProductLineTotal(item.product, item.quantity);
   }, 0);
 
   const cartProfit = cart.reduce((total, item) => {
-    return (
-      total +
-      item.quantity * (getEffectiveUnitPrice(item.product, item.quantity) - item.product.unit_cost)
-    );
+    return total + getProductLineTotal(item.product, item.quantity) - item.quantity * item.product.unit_cost;
   }, 0);
 
   const visibleDashboardViews = dashboardViews.filter(
@@ -831,6 +835,7 @@ export default function ArraiaDashboard() {
       name,
       category,
       sale_price: salePrice,
+      original_sale_price: null,
       unit_cost: unitCost,
       stock_quantity: Math.floor(stockQuantity),
       is_active: true,
@@ -925,6 +930,7 @@ export default function ArraiaDashboard() {
     const productPromotion = promotionOverride ?? {
       promo_min_quantity: product.promo_min_quantity ?? null,
       promo_discount_amount: product.promo_discount_amount ?? null,
+      original_sale_price: product.original_sale_price ?? null,
     };
     const productPayload = {
       organization_id: activeOrganizationId,
@@ -932,6 +938,7 @@ export default function ArraiaDashboard() {
       name,
       category,
       sale_price: salePrice,
+      original_sale_price: productPromotion.original_sale_price ?? null,
       unit_cost: unitCost,
       stock_quantity: Math.floor(stockQuantity),
       promo_min_quantity: productPromotion.promo_min_quantity,
@@ -2443,6 +2450,7 @@ function EditableProductList({
 
     if (promoDraft.mode === "discount") {
       const minQuantity = Number.parseInt(promoDraft.minQuantity, 10);
+      const currentSalePrice = parseNumber(baseDraft.salePrice);
 
       if (!Number.isInteger(minQuantity) || minQuantity < 2) {
         onStatusChange("Informe a partir de quantas unidades o desconto vai valer.");
@@ -2450,13 +2458,28 @@ function EditableProductList({
       }
 
       if (!Number.isFinite(promoValue) || promoValue <= 0) {
-        onStatusChange("Informe quanto de desconto sera aplicado em cada item.");
+        onStatusChange("Informe o valor promocional para essa quantidade.");
         return;
       }
 
+      if (!Number.isFinite(currentSalePrice)) {
+        onStatusChange("Não consegui aplicar a promoção porque o valor de venda atual está inválido.");
+        return;
+      }
+
+      const regularTotal = currentSalePrice * minQuantity;
+
+      if (promoValue >= regularTotal) {
+        onStatusChange("O valor promocional precisa ser menor que o total sem desconto.");
+        return;
+      }
+
+      const discountAmount = regularTotal - promoValue;
+
       await onSave(product.id, baseDraft, {
         promo_min_quantity: minQuantity,
-        promo_discount_amount: promoValue,
+        promo_discount_amount: discountAmount,
+        original_sale_price: product.original_sale_price ?? null,
       });
       setPromoDrafts((current) => {
         const next = { ...current };
@@ -2467,26 +2490,15 @@ function EditableProductList({
       return;
     }
 
-    const currentSalePrice = parseNumber(baseDraft.salePrice);
-
-    if (!Number.isFinite(currentSalePrice)) {
-      onStatusChange("Não consegui aplicar a promoção porque o valor de venda atual está inválido.");
-      return;
-    }
-
-    const nextSalePrice =
-      promoDraft.mode === "price"
-        ? promoValue
-        : Math.max(0, currentSalePrice - promoValue);
-
     const nextDraft: ProductDraft = {
       ...baseDraft,
-      salePrice: formatCurrencyInputFromNumber(nextSalePrice),
+      salePrice: formatCurrencyInputFromNumber(promoValue),
     };
 
     await onSave(product.id, nextDraft, {
       promo_min_quantity: null,
       promo_discount_amount: null,
+      original_sale_price: product.original_sale_price ?? product.sale_price,
     });
     setPromoDrafts((current) => {
       const next = { ...current };
@@ -2494,6 +2506,45 @@ function EditableProductList({
       return next;
     });
     setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+  }
+
+  async function removePromotion(product: Product) {
+    const baseDraft = productDrafts[product.id] ?? createProductDraft(product);
+
+    await onSave(product.id, baseDraft, {
+      promo_min_quantity: null,
+      promo_discount_amount: null,
+      original_sale_price: product.original_sale_price ?? null,
+    });
+    setPromoDrafts((current) => {
+      const next = { ...current };
+      delete next[product.id];
+      return next;
+    });
+    setOpenPanels((current) => ({ ...current, [product.id]: undefined }));
+  }
+
+  async function removePriceChange(product: Product) {
+    if (typeof product.original_sale_price !== "number") {
+      return;
+    }
+
+    const baseDraft = productDrafts[product.id] ?? createProductDraft(product);
+    const nextDraft: ProductDraft = {
+      ...baseDraft,
+      salePrice: formatCurrencyInputFromNumber(product.original_sale_price),
+    };
+
+    await onSave(product.id, nextDraft, {
+      promo_min_quantity: product.promo_min_quantity ?? null,
+      promo_discount_amount: product.promo_discount_amount ?? null,
+      original_sale_price: null,
+    });
+    setPromoDrafts((current) => {
+      const next = { ...current };
+      delete next[product.id];
+      return next;
+    });
   }
 
   return (
@@ -2504,7 +2555,12 @@ function EditableProductList({
           const draft = productDrafts[product.id] ?? createProductDraft(product);
           const openPanel = openPanels[product.id];
           const promoDraft = promoDrafts[product.id] ?? createPromotionDraft(product);
+          const promotion = getProductPromotion(product);
           const promotionSummary = getPromotionSummary(product);
+          const promotionalTotal = promotion ? getPromotionalPackageTotal(product, promotion) : 0;
+          const originalSalePrice =
+            typeof product.original_sale_price === "number" ? product.original_sale_price : null;
+          const hasPriceChange = originalSalePrice !== null && originalSalePrice !== product.sale_price;
 
           return (
             <article
@@ -2517,15 +2573,46 @@ function EditableProductList({
                   <p className="mt-1 text-sm text-slate-500">
                     {product.category} - Responsável: {product.group?.name ?? "Sem responsável"}
                   </p>
-                  {promotionSummary && (
-                    <p className="mt-2 text-xs font-semibold text-[#2563eb]">{promotionSummary}</p>
-                  )}
                 </div>
-                <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-5">
                   <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
                     <p className="text-slate-500">Venda</p>
-                    <p className="font-bold text-[#1d4ed8]">{currency.format(product.sale_price)}</p>
+                    <p className={`font-bold text-[#1d4ed8] ${hasPriceChange ? "line-through" : ""}`}>
+                      {currency.format(hasPriceChange ? originalSalePrice : product.sale_price)}
+                    </p>
                   </div>
+                  {hasPriceChange && (
+                    <div className="relative rounded-md border border-[#2563eb] bg-[#2563eb] px-3 py-2 pr-8 text-sm text-white">
+                      <p className="text-white/80">Novo valor</p>
+                      <p className="font-black">{currency.format(product.sale_price)}</p>
+                      <button
+                        type="button"
+                        aria-label="Remover novo valor"
+                        onClick={() => void removePriceChange(product)}
+                        disabled={savingProductId === product.id}
+                        className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded border border-white/25 text-xs font-black text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        x
+                      </button>
+                    </div>
+                  )}
+                  {promotion && (
+                    <div className="relative rounded-md border border-[#2563eb] bg-[#2563eb] px-3 py-2 pr-8 text-sm text-white">
+                      <p className="text-white/80">Promoção</p>
+                      <p className="font-black">
+                        {promotion.minQuantity} por {currency.format(promotionalTotal)}
+                      </p>
+                      <button
+                        type="button"
+                        aria-label="Remover promoção"
+                        onClick={() => void removePromotion(product)}
+                        disabled={savingProductId === product.id}
+                        className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded border border-white/25 text-xs font-black text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        x
+                      </button>
+                    </div>
+                  )}
                   <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
                     <p className="text-slate-500">Custo</p>
                     <p className="font-semibold">{currency.format(product.unit_cost)}</p>
@@ -2665,14 +2752,14 @@ function EditableProductList({
                           : "border-[#d7e3f8] bg-white text-slate-700 hover:border-[#2563eb]"
                       }`}
                     >
-                      Desconto em R$
+                      Desconto
                     </button>
                   </div>
                   {promoDraft.mode === "discount" && (
                     <input
                       value={promoDraft.minQuantity}
                       onChange={(event) => updatePromoDraft(product, "minQuantity", event.target.value)}
-                      placeholder="A partir de quantos"
+                      placeholder="Quantidade da promoção"
                       inputMode="numeric"
                       pattern="[0-9]*"
                       className="h-10 max-w-xs min-w-0 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
@@ -2683,14 +2770,18 @@ function EditableProductList({
                     <input
                       value={promoDraft.value}
                       onChange={(event) => updatePromoDraft(product, "value", event.target.value)}
-                      placeholder={promoDraft.mode === "price" ? "Novo valor" : "Quanto de desconto"}
+                      placeholder={
+                        promoDraft.mode === "price" ? "Novo valor" : "Valor promocional do pacote"
+                      }
                       inputMode="numeric"
                       className="h-full min-w-0 flex-1 bg-transparent pr-3 outline-none"
                     />
                   </label>
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="text-xs text-slate-500">
-                      A promoção atualiza o valor de venda e já deixa o produto pronto para vender.
+                      {promoDraft.mode === "price"
+                        ? "O novo valor substitui o preço normal do produto."
+                        : "Use como pacote promocional: por exemplo, 2 unidades por R$ 10,00."}
                     </p>
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -2707,6 +2798,16 @@ function EditableProductList({
                       >
                         Cancelar
                       </button>
+                      {promotionSummary && (
+                        <button
+                          type="button"
+                          onClick={() => void removePromotion(product)}
+                          disabled={savingProductId === product.id}
+                          className="inline-flex h-10 items-center justify-center rounded-md border border-red-200 bg-white px-4 text-sm font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          Remover promoção
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => void savePromotion(product)}
@@ -2740,6 +2841,9 @@ function ProductGrid({
     <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
       {products.map((product, index) => {
         const promotionSummary = getPromotionSummary(product);
+        const originalSalePrice =
+          typeof product.original_sale_price === "number" ? product.original_sale_price : null;
+        const hasPriceChange = originalSalePrice !== null && originalSalePrice !== product.sale_price;
         const content = (
           <>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2752,9 +2856,16 @@ function ProductGrid({
                   <p className="mt-2 text-xs font-semibold text-[#2563eb]">{promotionSummary}</p>
                 )}
               </div>
-              <span className="w-fit shrink-0 rounded bg-[#eaf3ff] px-2 py-1 text-sm font-black text-[#1d4ed8]">
-                {currency.format(product.sale_price)}
-              </span>
+              <div className="flex w-fit shrink-0 flex-wrap items-center justify-end gap-2">
+                {hasPriceChange && (
+                  <span className="rounded bg-[#f1f5f9] px-2 py-1 text-sm font-bold text-slate-400 line-through">
+                    {currency.format(originalSalePrice)}
+                  </span>
+                )}
+                <span className="rounded bg-[#eaf3ff] px-2 py-1 text-sm font-black text-[#1d4ed8]">
+                  {currency.format(product.sale_price)}
+                </span>
+              </div>
             </div>
             <dl className="mt-5 grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-3">
               <div className="min-w-0">
@@ -2834,32 +2945,50 @@ function CartPanel({
           </div>
         ) : (
           cart.map((item) => {
-            const effectiveUnitPrice = getEffectiveUnitPrice(item.product, item.quantity);
+            const lineTotal = getProductLineTotal(item.product, item.quantity);
             const promotion = getProductPromotion(item.product);
             const promotionReached = Boolean(
               promotion && item.quantity >= promotion.minQuantity,
             );
+            const promotionalTotal = promotion ? getPromotionalPackageTotal(item.product, promotion) : 0;
+            const promotionalPackages = promotion ? Math.floor(item.quantity / promotion.minQuantity) : 0;
+            const regularUnits = promotion ? item.quantity % promotion.minQuantity : item.quantity;
+            const originalSalePrice =
+              typeof item.product.original_sale_price === "number"
+                ? item.product.original_sale_price
+                : null;
+            const hasPriceChange =
+              originalSalePrice !== null && originalSalePrice !== item.product.sale_price;
 
             return (
               <div key={item.product.id} className="rounded-md border border-[#d7e3f8] bg-[#f8fbff] p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="break-words font-semibold">{item.product.name}</p>
-                    <p className="text-sm text-slate-500">
-                      {currency.format(effectiveUnitPrice)} cada
+                    <p className="flex flex-wrap items-center gap-2 text-sm">
+                      {hasPriceChange && (
+                        <span className="text-slate-400 line-through">
+                          {currency.format(originalSalePrice)} cada
+                        </span>
+                      )}
+                      <span className={hasPriceChange ? "font-bold text-[#1d4ed8]" : "text-slate-500"}>
+                        {currency.format(item.product.sale_price)} cada
+                      </span>
                     </p>
                     {promotion && (
                       <p className="mt-1 text-xs font-medium text-[#2563eb]">
                         {promotionReached
-                          ? `Desconto ativo: -${currency.format(promotion.discountAmount)} por unidade`
-                          : `A partir de ${promotion.minQuantity} unidades: -${currency.format(
-                              promotion.discountAmount,
-                            )} por unidade`}
+                          ? `Promoção ativa: ${promotionalPackages}x ${promotion.minQuantity} por ${currency.format(
+                              promotionalTotal,
+                            )}${regularUnits ? ` + ${regularUnits} no valor normal` : ""}`
+                          : `A partir de ${promotion.minQuantity} unidades: ${promotion.minQuantity} por ${currency.format(
+                              promotionalTotal,
+                            )}`}
                       </p>
                     )}
                   </div>
                   <p className="shrink-0 font-bold">
-                    {currency.format(effectiveUnitPrice * item.quantity)}
+                    {currency.format(lineTotal)}
                   </p>
                 </div>
                 <div className="mt-3 flex items-center gap-2">

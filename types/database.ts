@@ -53,6 +53,7 @@ export type Product = {
   name: string;
   category: string;
   sale_price: number;
+  original_sale_price?: number | null;
   unit_cost: number;
   stock_quantity: number;
   promo_min_quantity?: number | null;

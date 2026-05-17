@@ -1,7 +1,18 @@
 ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
- We detected multiple lockfiles and selected the directory of C:\Users\Dell Inspiron\package-lock.json as the root directory.
+ We detected multiple lockfiles and selected the directory of C:\Users\marco\package-lock.json as the root directory.
  To silence this warning, set `turbopack.root` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
    See https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory for more information.
  Detected additional lockfiles: 
-   * C:\Users\Dell Inspiron\Downloads\tarefasPS\sistema-arraia\package-lock.json
+   * C:\Users\marco\Documents\projects\sistema-arraia\package-lock.json
 
+[browser] Uncaught ReferenceError: getEffectiveUnitPrice is not defined
+    at ArraiaDashboard/cartTotal< (app/arraia-dashboard.tsx:591:36)
+    at ArraiaDashboard (app/arraia-dashboard.tsx:590:26)
+    at Home (app\page.tsx:4:10)
+  589 |
+  590 |   const cartTotal = cart.reduce((total, item) => {
+> 591 |     return total + item.quantity * getEffectiveUnitPrice(item.product, item.quantity);
+      |                                    ^
+  592 |   }, 0);
+  593 |
+  594 |   const cartProfit = cart.reduce((total, item) => {
