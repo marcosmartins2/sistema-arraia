@@ -3,8 +3,77 @@ alter table public.products
   add column if not exists promo_discount_amount numeric(10, 2),
   add column if not exists original_sale_price numeric(10, 2);
 
+drop view if exists public.event_profit_report;
+drop view if exists public.group_profit_report;
+
+alter table public.sale_items
+  drop column if exists line_total,
+  drop column if exists line_profit;
+
 alter table public.sale_items
   alter column unit_price type numeric(12, 6);
+
+alter table public.sale_items
+  add column line_total numeric(10, 2) generated always as (quantity * unit_price) stored,
+  add column line_profit numeric(10, 2) generated always as (quantity * (unit_price - unit_cost)) stored;
+
+create or replace view public.event_profit_report as
+select
+  o.id as organization_id,
+  coalesce(sales.gross_revenue, 0)::numeric(10, 2) as gross_revenue,
+  coalesce(sales.total_cost, 0)::numeric(10, 2) as total_cost,
+  coalesce(sales.gross_profit, 0)::numeric(10, 2) as gross_profit,
+  coalesce(expenses.total_expenses, 0)::numeric(10, 2) as total_expenses,
+  (coalesce(sales.gross_profit, 0) - coalesce(expenses.total_expenses, 0))::numeric(10, 2) as net_profit,
+  coalesce(sales.sales_count, 0)::integer as sales_count,
+  coalesce(items.items_sold, 0)::integer as items_sold
+from public.organizations o
+left join (
+  select
+    organization_id,
+    sum(gross_total) as gross_revenue,
+    sum(cost_total) as total_cost,
+    sum(profit_total) as gross_profit,
+    count(*) as sales_count
+  from public.sales
+  group by organization_id
+) sales on sales.organization_id = o.id
+left join (
+  select organization_id, sum(amount) as total_expenses
+  from public.expenses
+  group by organization_id
+) expenses on expenses.organization_id = o.id
+left join (
+  select organization_id, sum(quantity) as items_sold
+  from public.sale_items
+  group by organization_id
+) items on items.organization_id = o.id;
+
+alter view public.event_profit_report set (security_invoker = true);
+
+create or replace view public.group_profit_report as
+select
+  g.organization_id,
+  g.id as group_id,
+  g.name as group_name,
+  g.acronym,
+  g.color,
+  coalesce(sum(si.line_total), 0)::numeric(10, 2) as gross_revenue,
+  coalesce(sum(si.quantity * si.unit_cost), 0)::numeric(10, 2) as total_cost,
+  coalesce(sum(si.line_profit), 0)::numeric(10, 2) as gross_profit,
+  coalesce(expenses.total_expenses, 0)::numeric(10, 2) as total_expenses,
+  (coalesce(sum(si.line_profit), 0) - coalesce(expenses.total_expenses, 0))::numeric(10, 2) as net_profit,
+  coalesce(sum(si.quantity), 0)::integer as items_sold
+from public.groups g
+left join public.sale_items si on si.group_id = g.id and si.organization_id = g.organization_id
+left join (
+  select organization_id, group_id, sum(amount) as total_expenses
+  from public.expenses
+  group by organization_id, group_id
+) expenses on expenses.group_id = g.id and expenses.organization_id = g.organization_id
+group by g.organization_id, g.id, expenses.total_expenses;
+
+alter view public.group_profit_report set (security_invoker = true);
 
 alter table public.products
   drop constraint if exists products_promo_min_quantity_check;

@@ -433,17 +433,29 @@ export default function ArraiaDashboard() {
       nextOrganizations.find((organization) => organization.id === activeOrganizationId)?.id ??
       nextOrganizations[0]?.id;
 
+    setProfile(nextProfile);
+    setOrganizations(nextOrganizations);
+
     if (!organizationId) {
-      setStatus("Nenhuma organização disponível para este usuário.");
-      setOrganizations([]);
+      setActiveOrganizationId("");
       setCashierName("");
       setGroups([]);
       setProducts([]);
+      if (nextProfile?.role === "admin") {
+        const codesResult = await supabase
+          .from("organization_access_codes")
+          .select("*, organization:organizations(*)")
+          .order("created_at", { ascending: false });
+        if (!codesResult.error) {
+          setAccessCodes((codesResult.data ?? []) as OrganizationAccessCode[]);
+        }
+        setStatus("Nenhuma organização ainda. Crie o primeiro evento na aba Admin.");
+      } else {
+        setStatus("Nenhuma organização disponível para este usuário.");
+      }
       return;
     }
 
-    setProfile(nextProfile);
-    setOrganizations(nextOrganizations);
     setActiveOrganizationId(organizationId);
     setCashierName((current) =>
       getPreferredCashierName(
@@ -712,7 +724,26 @@ export default function ArraiaDashboard() {
     );
   }
 
-  function updateOrganizationStatus(organizationId: string, isActive: boolean) {
+  async function updateOrganizationStatus(organizationId: string, isActive: boolean) {
+    if (!isLocalOnlySession && supabase) {
+      const orgResult = await supabase
+        .from("organizations")
+        .update({ is_active: isActive })
+        .eq("id", organizationId);
+      if (orgResult.error) {
+        setStatus(`Não foi possível atualizar a festa: ${orgResult.error.message}`);
+        return;
+      }
+      const codesResult = await supabase
+        .from("organization_access_codes")
+        .update({ is_active: isActive })
+        .eq("organization_id", organizationId);
+      if (codesResult.error) {
+        setStatus(`Festa atualizada, mas falhou nos códigos: ${codesResult.error.message}`);
+        return;
+      }
+    }
+
     setOrganizations((current) =>
       current.map((organization) =>
         organization.id === organizationId ? { ...organization, is_active: isActive } : organization,
@@ -734,8 +765,28 @@ export default function ArraiaDashboard() {
     setStatus(isActive ? "Festa ativada." : "Festa inativada.");
   }
 
-  function deleteOrganization(organizationId: string) {
-    setOrganizations((current) => current.filter((organization) => organization.id !== organizationId));
+  async function deleteOrganization(organizationId: string) {
+    const target = organizations.find((organization) => organization.id === organizationId);
+    if (!target) return;
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Excluir a festa "${target.name}"? Isso apaga produtos, vendas e códigos de acesso vinculados.`,
+      );
+      if (!confirmed) return;
+    }
+
+    if (!isLocalOnlySession && supabase) {
+      setStatus("Excluindo festa...");
+      const result = await supabase.from("organizations").delete().eq("id", organizationId);
+      if (result.error) {
+        setStatus(`Não foi possível excluir a festa: ${result.error.message}`);
+        return;
+      }
+    }
+
+    const nextOrganizations = organizations.filter((organization) => organization.id !== organizationId);
+    setOrganizations(nextOrganizations);
     setAccessCodes((current) => current.filter((code) => code.organization_id !== organizationId));
     setProducts((current) => current.filter((product) => product.organization_id !== organizationId));
     setRecentSales((current) => current.filter((sale) => sale.organization_id !== organizationId));
@@ -744,9 +795,9 @@ export default function ArraiaDashboard() {
     );
 
     if (activeOrganizationId === organizationId) {
-      const nextActiveOrganization = organizations.find(
-        (organization) => organization.id !== organizationId && organization.is_active !== false,
-      );
+      const nextActiveOrganization = nextOrganizations.find(
+        (organization) => organization.is_active !== false,
+      ) ?? nextOrganizations[0];
       setActiveOrganizationId(nextActiveOrganization?.id ?? "");
       setCashierName(getPreferredCashierName(nextActiveOrganization));
       setCart([]);
@@ -1355,6 +1406,31 @@ export default function ArraiaDashboard() {
       return;
     }
 
+    setIsSubmittingAuth(true);
+    setStatus("Entrando como admin oficial...");
+
+    if (supabase) {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: officialAdmin.email,
+        password: officialAdmin.password,
+      });
+      setIsSubmittingAuth(false);
+
+      if (signInError) {
+        const message = `Não consegui entrar: ${signInError.message}`;
+        setAuthMessage(message);
+        setStatus(message);
+        return;
+      }
+
+      setAuthMessage(null);
+      setAccessCode("");
+      setAuthForm(initialAuthForm);
+      setActiveView("admin");
+      setStatus("Admin oficial conectado. Carregando dados...");
+      return;
+    }
+
     const adminProfile: Profile = {
       id: officialAdmin.id,
       email: officialAdmin.email,
@@ -1362,10 +1438,7 @@ export default function ArraiaDashboard() {
       role: "admin",
     };
 
-    setIsSubmittingAuth(true);
-    setStatus("Entrando como admin oficial...");
     setIsSubmittingAuth(false);
-
     setAuthMessage(null);
     setAccessCode("");
     setUser({ id: officialAdmin.id, email: officialAdmin.email });
@@ -2044,9 +2117,9 @@ function AdminPanel({
   onCreateAccessCode: (event: FormEvent<HTMLFormElement>) => void;
   onCreateOrganization: (event: FormEvent<HTMLFormElement>) => void;
   onDeleteAccessCode: (codeId: string) => void;
-  onDeleteOrganization: (organizationId: string) => void;
+  onDeleteOrganization: (organizationId: string) => void | Promise<void>;
   onDeleteSystemAccount: (accountId: string) => void;
-  onUpdateOrganizationStatus: (organizationId: string, isActive: boolean) => void;
+  onUpdateOrganizationStatus: (organizationId: string, isActive: boolean) => void | Promise<void>;
   onRemoveOrganizationCashier: (index: number) => void;
   organizationForm: typeof initialOrganizationForm;
   organizations: Organization[];
@@ -2292,7 +2365,7 @@ function AdminPanel({
               <div className="flex flex-wrap gap-2 lg:justify-end">
                 <button
                   type="button"
-                  onClick={() => onUpdateOrganizationStatus(organization.id, true)}
+                  onClick={() => void onUpdateOrganizationStatus(organization.id, true)}
                   className={`h-7 rounded px-2 text-[11px] font-semibold uppercase transition ${
                     organization.is_active === false
                       ? "border border-[#d7e3f8] bg-white text-slate-400 hover:bg-[#f0f6ff] hover:text-slate-600"
@@ -2303,7 +2376,7 @@ function AdminPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onUpdateOrganizationStatus(organization.id, false)}
+                  onClick={() => void onUpdateOrganizationStatus(organization.id, false)}
                   className={`h-7 rounded px-2 text-[11px] font-semibold uppercase transition ${
                     organization.is_active === false
                       ? "bg-red-50/70 text-red-700"
@@ -2314,7 +2387,7 @@ function AdminPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onDeleteOrganization(organization.id)}
+                  onClick={() => void onDeleteOrganization(organization.id)}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 hover:text-red-700"
                   aria-label={`Excluir evento ${organization.name}`}
                   title="Excluir"

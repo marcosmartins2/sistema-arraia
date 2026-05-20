@@ -250,6 +250,9 @@ alter table public.products
   foreign key (group_id, organization_id)
   references public.groups(id, organization_id);
 
+drop view if exists public.event_profit_report;
+drop view if exists public.group_profit_report;
+
 create or replace view public.event_profit_report as
 select
   o.id as organization_id,

@@ -9,11 +9,14 @@ max_rows = 1000
 
 [db]
 port = 54322
-major_version = 15
+major_version = 17
 
 [studio]
 enabled = true
 port = 54323
 
 [functions.register-sale]
+verify_jwt = false
+
+[functions.dashboard-data]
 verify_jwt = false
