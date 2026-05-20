@@ -23,16 +23,20 @@ import {
   ShoppingBasket,
   Ticket,
   Trash2,
+  X,
   UserRound,
   WalletCards,
 } from "lucide-react";
 import {
+  demoCashierSales,
   demoOrganizationId,
   demoGroups,
   demoProducts,
+  demoProductSales,
   demoRecentSales,
   demoReport,
 } from "@/lib/demo-data";
+import type { CashierSalesSummary } from "@/lib/demo-data";
 import {
   dashboardDataUrl,
   isSupabaseConfigured,
@@ -99,6 +103,46 @@ const initialAccessCodeForm = {
   label: "",
   organizationId: "",
 };
+
+function aggregateProductSales(
+  rows: Array<{ product_id?: string | null; quantity?: number | null }> | null | undefined,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  if (!rows) return result;
+  for (const row of rows) {
+    if (!row?.product_id) continue;
+    const qty = Number(row.quantity ?? 0);
+    if (!Number.isFinite(qty)) continue;
+    result[row.product_id] = (result[row.product_id] ?? 0) + qty;
+  }
+  return result;
+}
+
+function aggregateCashierSales(
+  rows:
+    | Array<{
+        cashier_name?: string | null;
+        gross_total?: number | null;
+        profit_total?: number | null;
+      }>
+    | null
+    | undefined,
+): Record<string, CashierSalesSummary> {
+  const result: Record<string, CashierSalesSummary> = {};
+  if (!rows) return result;
+  for (const row of rows) {
+    const key = (row?.cashier_name ?? "").trim() || "Sem identificação";
+    const revenue = Number(row?.gross_total ?? 0);
+    const profit = Number(row?.profit_total ?? 0);
+    const existing = result[key] ?? { count: 0, revenue: 0, profit: 0 };
+    result[key] = {
+      count: existing.count + 1,
+      revenue: existing.revenue + (Number.isFinite(revenue) ? revenue : 0),
+      profit: existing.profit + (Number.isFinite(profit) ? profit : 0),
+    };
+  }
+  return result;
+}
 
 const officialAdmin = {
   id: "official-admin",
@@ -323,6 +367,14 @@ export default function ArraiaDashboard() {
   const [products, setProducts] = useState<Product[]>(demoProducts);
   const [report, setReport] = useState<SaleReport>(demoReport);
   const [recentSales, setRecentSales] = useState<RecentSale[]>(demoRecentSales);
+  const [productSalesByOrg, setProductSalesByOrg] = useState<Record<string, Record<string, number>>>({
+    [demoOrganizationId]: demoProductSales,
+  });
+  const [cashierSalesByOrg, setCashierSalesByOrg] = useState<Record<string, Record<string, CashierSalesSummary>>>({
+    [demoOrganizationId]: demoCashierSales,
+  });
+  const [isItemsBreakdownOpen, setIsItemsBreakdownOpen] = useState(false);
+  const [isCashierBreakdownOpen, setIsCashierBreakdownOpen] = useState(false);
   const [cart, setCart] = useState<SaleItemDraft[]>([]);
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [cashierName, setCashierName] = useState("");
@@ -343,6 +395,8 @@ export default function ArraiaDashboard() {
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
   const isOfficialAdminSession = user?.id === officialAdmin.id;
+  const isLocalOnlySession =
+    isOfficialAdminSession || Boolean(accessCode) || !isSupabaseConfigured || !supabase;
 
   async function loadData({ announce = true } = {}) {
     if (isOfficialAdminSession) {
@@ -414,7 +468,7 @@ export default function ArraiaDashboard() {
       setAccessCodes([]);
     }
 
-    const [groupsResult, productsResult, reportResult, salesResult] = await Promise.all([
+    const [groupsResult, productsResult, reportResult, salesResult, itemsResult, allSalesResult] = await Promise.all([
       supabase.from("groups").select("*").eq("organization_id", organizationId).order("name"),
       supabase
         .from("products")
@@ -433,6 +487,14 @@ export default function ArraiaDashboard() {
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(12),
+      supabase
+        .from("sale_items")
+        .select("product_id, quantity, sales!inner(organization_id)")
+        .eq("sales.organization_id", organizationId),
+      supabase
+        .from("sales")
+        .select("cashier_name, gross_total, profit_total")
+        .eq("organization_id", organizationId),
     ]);
 
     if (groupsResult.error || productsResult.error || reportResult.error || salesResult.error) {
@@ -444,6 +506,14 @@ export default function ArraiaDashboard() {
     setProducts(productsResult.data ?? []);
     setReport((reportResult.data as SaleReport | null) ?? { ...demoReport, organization_id: organizationId });
     setRecentSales((salesResult.data ?? []) as RecentSale[]);
+    setProductSalesByOrg((current) => ({
+      ...current,
+      [organizationId]: aggregateProductSales(itemsResult.data),
+    }));
+    setCashierSalesByOrg((current) => ({
+      ...current,
+      [organizationId]: aggregateCashierSales(allSalesResult.data),
+    }));
     setStatus("Dados sincronizados com Supabase.");
   }
 
@@ -504,6 +574,14 @@ export default function ArraiaDashboard() {
     setProducts((payload.products ?? []) as Product[]);
     setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
     setRecentSales((payload.recentSales ?? []) as RecentSale[]);
+    setProductSalesByOrg((current) => ({
+      ...current,
+      [organization.id]: aggregateProductSales(payload.saleItems),
+    }));
+    setCashierSalesByOrg((current) => ({
+      ...current,
+      [organization.id]: aggregateCashierSales(payload.cashierSales),
+    }));
     setStatus("Dados sincronizados pelo código.");
   }
 
@@ -581,6 +659,23 @@ export default function ArraiaDashboard() {
           sales_count: 0,
           items_sold: 0,
         };
+
+  const activeProductSales = productSalesByOrg[activeOrganizationId] ?? {};
+  const productSalesBreakdown = useMemo(() => {
+    return activeProducts
+      .map((product) => ({
+        product,
+        quantity: activeProductSales[product.id] ?? 0,
+      }))
+      .sort((a, b) => b.quantity - a.quantity || a.product.name.localeCompare(b.product.name));
+  }, [activeProducts, activeProductSales]);
+
+  const activeCashierSales = cashierSalesByOrg[activeOrganizationId] ?? {};
+  const cashierSalesBreakdown = useMemo(() => {
+    return Object.entries(activeCashierSales)
+      .map(([name, summary]) => ({ name, ...summary }))
+      .sort((a, b) => b.revenue - a.revenue || a.name.localeCompare(b.name));
+  }, [activeCashierSales]);
 
   const cartTotal = cart.reduce((total, item) => {
     return total + getProductLineTotal(item.product, item.quantity);
@@ -758,7 +853,7 @@ export default function ArraiaDashboard() {
       return existingGroup;
     }
 
-    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
+    if (isLocalOnlySession) {
       const createdGroup: Group = {
         id: crypto.randomUUID(),
         organization_id: activeOrganizationId,
@@ -772,6 +867,8 @@ export default function ArraiaDashboard() {
       );
       return createdGroup;
     }
+
+    if (!supabase) return null;
 
     const groupResult = await supabase
       .from("groups")
@@ -823,6 +920,11 @@ export default function ArraiaDashboard() {
       return;
     }
 
+    if (!activeOrganizationId) {
+      setStatus("Selecione ou crie uma organização antes de cadastrar produtos.");
+      return;
+    }
+
     const responsibleGroup = await ensureResponsibleGroup(responsibleName);
 
     if (!responsibleGroup) {
@@ -841,7 +943,7 @@ export default function ArraiaDashboard() {
       is_active: true,
     };
 
-    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
+    if (isLocalOnlySession) {
       const product: Product = {
         id: crypto.randomUUID(),
         ...productPayload,
@@ -853,6 +955,8 @@ export default function ArraiaDashboard() {
       setStatus("Produto cadastrado e disponível no caixa.");
       return;
     }
+
+    if (!supabase) return;
 
     setIsCreatingProduct(true);
     setStatus("Cadastrando produto...");
@@ -946,7 +1050,7 @@ export default function ArraiaDashboard() {
       is_active: true,
     };
 
-    if (isOfficialAdminSession || !isSupabaseConfigured || !supabase) {
+    if (isLocalOnlySession) {
       setProducts((current) =>
         current
           .map((item) =>
@@ -960,6 +1064,8 @@ export default function ArraiaDashboard() {
       setStatus("Produto atualizado e pronto para vender no caixa.");
       return;
     }
+
+    if (!supabase) return;
 
     setSavingProductId(productId);
     const result = await supabase
@@ -1040,6 +1146,24 @@ export default function ArraiaDashboard() {
             : product;
         }),
       );
+      setProductSalesByOrg((current) => {
+        const orgSales = { ...(current[activeOrganizationId] ?? {}) };
+        for (const item of cart) {
+          orgSales[item.product.id] = (orgSales[item.product.id] ?? 0) + item.quantity;
+        }
+        return { ...current, [activeOrganizationId]: orgSales };
+      });
+      setCashierSalesByOrg((current) => {
+        const orgCashiers = { ...(current[activeOrganizationId] ?? {}) };
+        const key = cashierName || "Sem identificação";
+        const existing = orgCashiers[key] ?? { count: 0, revenue: 0, profit: 0 };
+        orgCashiers[key] = {
+          count: existing.count + 1,
+          revenue: existing.revenue + cartTotal,
+          profit: existing.profit + cartProfit,
+        };
+        return { ...current, [activeOrganizationId]: orgCashiers };
+      });
       setCart([]);
       setStatus("Venda registrada no modo demonstrativo.");
       return;
@@ -1171,6 +1295,14 @@ export default function ArraiaDashboard() {
       setProducts((payload.products ?? []) as Product[]);
       setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
       setRecentSales((payload.recentSales ?? []) as RecentSale[]);
+      setProductSalesByOrg((current) => ({
+        ...current,
+        [organization.id]: aggregateProductSales(payload.saleItems),
+      }));
+      setCashierSalesByOrg((current) => ({
+        ...current,
+        [organization.id]: aggregateCashierSales(payload.cashierSales),
+      }));
       setAuthForm(initialAuthForm);
       setStatus("Código aceito. Dados sincronizados.");
       return;
@@ -1600,14 +1732,24 @@ export default function ArraiaDashboard() {
 
           {activeView === "report" && (
             <section className="space-y-5">
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 <Metric icon={<Banknote size={18} />} label="Receita" value={currency.format(activeReport.gross_revenue)} />
                 <Metric icon={<WalletCards size={18} />} label="Custo dos produtos" value={currency.format(activeReport.total_cost)} />
                 <Metric icon={<BarChart3 size={18} />} label="Lucro líquido" value={currency.format(activeReport.gross_profit)} />
-                <Metric icon={<Ticket size={18} />} label="Itens vendidos" value={String(activeReport.items_sold)} />
               </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                <Metric icon={<ReceiptText size={18} />} label="Vendas registradas" value={String(activeReport.sales_count)} />
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <Metric
+                  icon={<Ticket size={18} />}
+                  label="Itens vendidos"
+                  value={String(activeReport.items_sold)}
+                  onClick={() => setIsItemsBreakdownOpen(true)}
+                />
+                <Metric
+                  icon={<ReceiptText size={18} />}
+                  label="Vendas registradas"
+                  value={String(activeReport.sales_count)}
+                  onClick={() => setIsCashierBreakdownOpen(true)}
+                />
                 <Metric
                   icon={<CircleDollarSign size={18} />}
                   label="Ticket médio"
@@ -1619,6 +1761,21 @@ export default function ArraiaDashboard() {
                   value={currency.format(activeReport.items_sold ? activeReport.gross_profit / activeReport.items_sold : 0)}
                 />
               </div>
+              {isItemsBreakdownOpen && (
+                <ItemsBreakdownModal
+                  breakdown={productSalesBreakdown}
+                  totalItems={activeReport.items_sold}
+                  onClose={() => setIsItemsBreakdownOpen(false)}
+                />
+              )}
+              {isCashierBreakdownOpen && (
+                <CashierBreakdownModal
+                  breakdown={cashierSalesBreakdown}
+                  totalSales={activeReport.sales_count}
+                  totalRevenue={activeReport.gross_revenue}
+                  onClose={() => setIsCashierBreakdownOpen(false)}
+                />
+              )}
             </section>
           )}
 
@@ -3078,22 +3235,175 @@ function SalesList({ sales }: { sales: RecentSale[] }) {
   );
 }
 
+function ItemsBreakdownModal({
+  breakdown,
+  totalItems,
+  onClose,
+}: {
+  breakdown: Array<{ product: Product; quantity: number }>;
+  totalItems: number;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="items-breakdown-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[#0b3a75]/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-md border border-[#d7e3f8] bg-white shadow-xl shadow-[#0b3a75]/15"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-[#d7e3f8] p-4 sm:p-5">
+          <div>
+            <h2 id="items-breakdown-title" className="text-lg font-black text-[#10233f]">
+              Itens vendidos por produto
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Total no evento: <strong className="text-[#10233f]">{totalItems}</strong>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] text-slate-600 transition hover:bg-[#f0f6ff]"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto p-4 sm:p-5">
+          {breakdown.length === 0 ? (
+            <p className="text-sm text-slate-500">Nenhum produto cadastrado para esta organização.</p>
+          ) : (
+            <ul className="divide-y divide-[#e3ecfb]">
+              {breakdown.map(({ product, quantity }) => (
+                <li key={product.id} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[#10233f]">{product.name}</p>
+                    {product.category && (
+                      <p className="truncate text-xs text-slate-500">{product.category}</p>
+                    )}
+                  </div>
+                  <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
+                    {quantity}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CashierBreakdownModal({
+  breakdown,
+  totalSales,
+  totalRevenue,
+  onClose,
+}: {
+  breakdown: Array<{ name: string; count: number; revenue: number; profit: number }>;
+  totalSales: number;
+  totalRevenue: number;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cashier-breakdown-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[#0b3a75]/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl rounded-md border border-[#d7e3f8] bg-white shadow-xl shadow-[#0b3a75]/15"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-[#d7e3f8] p-4 sm:p-5">
+          <div>
+            <h2 id="cashier-breakdown-title" className="text-lg font-black text-[#10233f]">
+              Vendas por vendedor
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {totalSales} {totalSales === 1 ? "venda" : "vendas"} •{" "}
+              <strong className="text-[#10233f]">{currency.format(totalRevenue)}</strong>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[#d7e3f8] text-slate-600 transition hover:bg-[#f0f6ff]"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto p-4 sm:p-5">
+          {breakdown.length === 0 ? (
+            <p className="text-sm text-slate-500">Nenhuma venda registrada até agora.</p>
+          ) : (
+            <ul className="divide-y divide-[#e3ecfb]">
+              {breakdown.map(({ name, count, revenue, profit }) => (
+                <li key={name} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[#10233f]">{name}</p>
+                    <p className="text-xs text-slate-500">
+                      {count} {count === 1 ? "venda" : "vendas"} • Lucro {currency.format(profit)}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
+                    {currency.format(revenue)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Metric({
   icon,
   label,
   value,
+  onClick,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
+  onClick?: () => void;
 }) {
-  return (
-    <div className="min-w-0 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
+  const content = (
+    <>
       <div className="flex items-center gap-2 text-sm font-bold text-[#2563eb]">
         {icon}
         {label}
       </div>
       <p className="mt-3 break-words text-xl font-black tracking-normal text-[#10233f] sm:text-2xl">{value}</p>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="min-w-0 rounded-md border border-[#d7e3f8] bg-white p-4 text-left shadow-sm shadow-[#0b3a75]/5 transition hover:border-[#2563eb] hover:bg-[#f0f6ff] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563eb]"
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className="min-w-0 rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5">
+      {content}
     </div>
   );
 }

@@ -88,6 +88,24 @@ export const demoReport: SaleReport = {
   items_sold: 226,
 };
 
+export const demoProductSales: Record<string, number> = {
+  caldo: 60,
+  "correio-elegante": 80,
+  refrigerante: 50,
+  "ficha-10": 36,
+};
+
+export type CashierSalesSummary = {
+  count: number;
+  revenue: number;
+  profit: number;
+};
+
+export const demoCashierSales: Record<string, CashierSalesSummary> = {
+  "Caixa 1": { count: 78, revenue: 1520, profit: 850 },
+  "Caixa 2": { count: 70, revenue: 1340, profit: 742 },
+};
+
 export const demoRecentSales: RecentSale[] = [
   {
     id: "demo-1",

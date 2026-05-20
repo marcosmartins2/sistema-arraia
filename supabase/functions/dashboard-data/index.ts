@@ -57,7 +57,7 @@ Deno.serve(async (request) => {
     }
 
     const organizationId = accessCode.organization_id;
-    const [groupsResult, productsResult, reportResult, salesResult] = await Promise.all([
+    const [groupsResult, productsResult, reportResult, salesResult, itemsResult, allSalesResult] = await Promise.all([
       supabase.from("groups").select("*").eq("organization_id", organizationId).order("name"),
       supabase
         .from("products")
@@ -76,9 +76,24 @@ Deno.serve(async (request) => {
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(12),
+      supabase
+        .from("sale_items")
+        .select("product_id, quantity, sales!inner(organization_id)")
+        .eq("sales.organization_id", organizationId),
+      supabase
+        .from("sales")
+        .select("cashier_name, gross_total, profit_total")
+        .eq("organization_id", organizationId),
     ]);
 
-    if (groupsResult.error || productsResult.error || reportResult.error || salesResult.error) {
+    if (
+      groupsResult.error ||
+      productsResult.error ||
+      reportResult.error ||
+      salesResult.error ||
+      itemsResult.error ||
+      allSalesResult.error
+    ) {
       return Response.json(
         { error: "Nao foi possivel carregar os dados." },
         { status: 400, headers: corsHeaders },
@@ -92,6 +107,8 @@ Deno.serve(async (request) => {
         products: productsResult.data ?? [],
         report: reportResult.data,
         recentSales: salesResult.data ?? [],
+        saleItems: itemsResult.data ?? [],
+        cashierSales: allSalesResult.data ?? [],
       },
       { headers: corsHeaders },
     );
