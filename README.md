@@ -61,4 +61,4 @@ npm install
 npm run dev
 ```
 
-Enquanto o `.env.local` estiver vazio, a interface abre em modo demonstrativo para validar o fluxo do caixa sem depender do Supabase.
+O Supabase é obrigatório: a interface só carrega dados após o login (admin via e-mail/senha ou cliente via código de evento).

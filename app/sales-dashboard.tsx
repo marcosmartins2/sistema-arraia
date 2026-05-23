@@ -29,23 +29,15 @@ import {
   WalletCards,
 } from "lucide-react";
 import {
-  demoCashierSales,
-  demoOrganizationId,
-  demoGroups,
-  demoProducts,
-  demoProductSales,
-  demoRecentSales,
-  demoReport,
-} from "@/lib/demo-data";
-import type { CashierSalesSummary } from "@/lib/demo-data";
-import {
   dashboardDataUrl,
   isSupabaseConfigured,
   registerSaleUrl,
+  saveProductUrl,
   supabase,
   updateOrganizationUrl,
 } from "@/lib/supabase";
 import type {
+  CashierSalesSummary,
   Group,
   Organization,
   OrganizationAccessCode,
@@ -55,6 +47,19 @@ import type {
   SaleItemDraft,
   SaleReport,
 } from "@/types/database";
+
+function createEmptyReport(organizationId = ""): SaleReport {
+  return {
+    organization_id: organizationId,
+    gross_revenue: 0,
+    total_cost: 0,
+    gross_profit: 0,
+    total_expenses: 0,
+    net_profit: 0,
+    sales_count: 0,
+    items_sold: 0,
+  };
+}
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -366,23 +371,19 @@ export default function SalesDashboard() {
     code: string;
     organizationId: string;
   } | null>(null);
-  const [groups, setGroups] = useState<Group[]>(demoGroups);
-  const [products, setProducts] = useState<Product[]>(demoProducts);
-  const [report, setReport] = useState<SaleReport>(demoReport);
-  const [recentSales, setRecentSales] = useState<RecentSale[]>(demoRecentSales);
-  const [productSalesByOrg, setProductSalesByOrg] = useState<Record<string, Record<string, number>>>({
-    [demoOrganizationId]: demoProductSales,
-  });
-  const [cashierSalesByOrg, setCashierSalesByOrg] = useState<Record<string, Record<string, CashierSalesSummary>>>({
-    [demoOrganizationId]: demoCashierSales,
-  });
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [report, setReport] = useState<SaleReport>(() => createEmptyReport());
+  const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
+  const [productSalesByOrg, setProductSalesByOrg] = useState<Record<string, Record<string, number>>>({});
+  const [cashierSalesByOrg, setCashierSalesByOrg] = useState<Record<string, Record<string, CashierSalesSummary>>>({});
   const [isItemsBreakdownOpen, setIsItemsBreakdownOpen] = useState(false);
   const [isCashierBreakdownOpen, setIsCashierBreakdownOpen] = useState(false);
   const [cart, setCart] = useState<SaleItemDraft[]>([]);
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [cashierName, setCashierName] = useState("");
   const [activeView, setActiveView] = useState<DashboardView>("cashier");
-  const [activeOrganizationId, setActiveOrganizationId] = useState(demoOrganizationId);
+  const [activeOrganizationId, setActiveOrganizationId] = useState("");
   const [productForm, setProductForm] = useState(initialProductForm);
   const [productDrafts, setProductDrafts] = useState<Record<string, ProductDraft>>({});
   const [status, setStatus] = useState(
@@ -525,7 +526,7 @@ export default function SalesDashboard() {
 
     setGroups(groupsResult.data ?? []);
     setProducts(productsResult.data ?? []);
-    setReport((reportResult.data as SaleReport | null) ?? { ...demoReport, organization_id: organizationId });
+    setReport((reportResult.data as SaleReport | null) ?? createEmptyReport(organizationId));
     setRecentSales((salesResult.data ?? []) as RecentSale[]);
     setProductSalesByOrg((current) => ({
       ...current,
@@ -552,7 +553,7 @@ export default function SalesDashboard() {
     setCashierName(getPreferredCashierName(organization));
     setGroups((payload.groups ?? []) as Group[]);
     setProducts((payload.products ?? []) as Product[]);
-    setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
+    setReport((payload.report as SaleReport | null) ?? createEmptyReport(organization.id));
     setRecentSales((payload.recentSales ?? []) as RecentSale[]);
     setProductSalesByOrg((current) => ({
       ...current,
@@ -619,7 +620,7 @@ export default function SalesDashboard() {
     setCashierName((current) => getPreferredCashierName(organization, current));
     setGroups((payload.groups ?? []) as Group[]);
     setProducts((payload.products ?? []) as Product[]);
-    setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
+    setReport((payload.report as SaleReport | null) ?? createEmptyReport(organization.id));
     setRecentSales((payload.recentSales ?? []) as RecentSale[]);
     setProductSalesByOrg((current) => ({
       ...current,
@@ -746,19 +747,7 @@ export default function SalesDashboard() {
   }, [activeOrganizationId, recentSales]);
 
   const activeReport =
-    report.organization_id === activeOrganizationId
-      ? report
-      : {
-          ...demoReport,
-          organization_id: activeOrganizationId,
-          gross_revenue: 0,
-          total_cost: 0,
-          gross_profit: 0,
-          total_expenses: 0,
-          net_profit: 0,
-          sales_count: 0,
-          items_sold: 0,
-        };
+    report.organization_id === activeOrganizationId ? report : createEmptyReport(activeOrganizationId);
 
   const activeProductSales = productSalesByOrg[activeOrganizationId] ?? {};
   const productSalesBreakdown = useMemo(() => {
@@ -921,7 +910,7 @@ export default function SalesDashboard() {
     if (isLocalOnlySession || !supabase) {
       applyLocal();
       setIsSavingSettings(false);
-      setStatus("Configuracoes atualizadas no modo demonstrativo.");
+      setStatus("Configuracoes atualizadas localmente.");
       return true;
     }
 
@@ -1120,6 +1109,64 @@ export default function SalesDashboard() {
     return createdGroup;
   }
 
+  async function saveProductViaEdgeFunction(payload: {
+    id?: string;
+    responsible_name: string;
+    name: string;
+    category: string;
+    sale_price: number;
+    unit_cost: number;
+    stock_quantity: number;
+    original_sale_price?: number | null;
+    promo_min_quantity?: number | null;
+    promo_discount_amount?: number | null;
+  }): Promise<boolean> {
+    if (!saveProductUrl) return false;
+
+    let response: Response;
+    try {
+      response = await fetch(saveProductUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_code: accessCode, product: payload }),
+      });
+    } catch {
+      setStatus(
+        "Não consegui alcançar o servidor para salvar o produto. Verifique se a edge function 'save-product' está deployada.",
+      );
+      return false;
+    }
+
+    const responsePayload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      setStatus(responsePayload?.error ?? "Não foi possível salvar o produto.");
+      return false;
+    }
+
+    const savedProduct = responsePayload?.product as Product | undefined;
+    const savedGroup = responsePayload?.group as Group | undefined;
+
+    if (savedProduct) {
+      setProducts((current) => {
+        const exists = current.some((item) => item.id === savedProduct.id);
+        const next = exists
+          ? current.map((item) => (item.id === savedProduct.id ? savedProduct : item))
+          : [...current, savedProduct];
+        return next.sort((a, b) => a.name.localeCompare(b.name));
+      });
+    }
+
+    if (savedGroup) {
+      setGroups((current) => {
+        if (current.some((item) => item.id === savedGroup.id)) return current;
+        return [...current, savedGroup].sort((a, b) => a.name.localeCompare(b.name));
+      });
+    }
+
+    return true;
+  }
+
   async function createProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1149,6 +1196,24 @@ export default function SalesDashboard() {
 
     if (!activeOrganizationId) {
       setStatus("Selecione ou crie uma organização antes de cadastrar produtos.");
+      return;
+    }
+
+    if (accessCode && saveProductUrl) {
+      setIsCreatingProduct(true);
+      setStatus("Cadastrando produto...");
+      const saved = await saveProductViaEdgeFunction({
+        responsible_name: responsibleName,
+        name,
+        category,
+        sale_price: salePrice,
+        unit_cost: unitCost,
+        stock_quantity: stockQuantity,
+      });
+      setIsCreatingProduct(false);
+      if (!saved) return;
+      setProductForm(initialProductForm);
+      setStatus("Produto cadastrado e disponível no caixa.");
       return;
     }
 
@@ -1252,17 +1317,39 @@ export default function SalesDashboard() {
       return;
     }
 
+    const productPromotion = promotionOverride ?? {
+      promo_min_quantity: product.promo_min_quantity ?? null,
+      promo_discount_amount: product.promo_discount_amount ?? null,
+      original_sale_price: product.original_sale_price ?? null,
+    };
+
+    if (accessCode && saveProductUrl) {
+      setSavingProductId(productId);
+      const saved = await saveProductViaEdgeFunction({
+        id: productId,
+        responsible_name: responsibleName,
+        name,
+        category,
+        sale_price: salePrice,
+        unit_cost: unitCost,
+        stock_quantity: stockQuantity,
+        original_sale_price: productPromotion.original_sale_price,
+        promo_min_quantity: productPromotion.promo_min_quantity,
+        promo_discount_amount: productPromotion.promo_discount_amount,
+      });
+      setSavingProductId(null);
+      if (!saved) return;
+      resetProductDraft(productId);
+      setStatus("Produto atualizado e pronto para vender no caixa.");
+      return;
+    }
+
     const responsibleGroup = await ensureResponsibleGroup(responsibleName);
 
     if (!responsibleGroup) {
       return;
     }
 
-    const productPromotion = promotionOverride ?? {
-      promo_min_quantity: product.promo_min_quantity ?? null,
-      promo_discount_amount: product.promo_discount_amount ?? null,
-      original_sale_price: product.original_sale_price ?? null,
-    };
     const productPayload = {
       organization_id: activeOrganizationId,
       group_id: responsibleGroup.id,
@@ -1342,17 +1429,7 @@ export default function SalesDashboard() {
         const base =
           current.organization_id === activeOrganizationId
             ? current
-            : {
-                ...demoReport,
-                organization_id: activeOrganizationId,
-                gross_revenue: 0,
-                total_cost: 0,
-                gross_profit: 0,
-                total_expenses: 0,
-                net_profit: 0,
-                sales_count: 0,
-                items_sold: 0,
-              };
+            : createEmptyReport(activeOrganizationId);
 
         return {
           organization_id: activeOrganizationId,
@@ -1392,7 +1469,7 @@ export default function SalesDashboard() {
         return { ...current, [activeOrganizationId]: orgCashiers };
       });
       setCart([]);
-      setStatus("Venda registrada no modo demonstrativo.");
+      setStatus("Venda registrada localmente (sem persistência).");
       return;
     }
 
@@ -1485,7 +1562,7 @@ export default function SalesDashboard() {
         setCashierName(getPreferredCashierName(organization));
         setAuthForm(initialAuthForm);
         setAuthMessage(null);
-        setStatus("Código aceito no modo demonstrativo.");
+        setStatus("Código aceito localmente.");
         return;
       }
 
@@ -1605,10 +1682,10 @@ export default function SalesDashboard() {
     setActiveOrganizationId("");
     setCashierName("");
     setAccessCodeForm((current) => ({ ...current, organizationId: "" }));
-    setGroups((current) => (current.length ? current : demoGroups));
-    setProducts((current) => (current.length ? current : demoProducts));
-    setReport((current) => current ?? demoReport);
-    setRecentSales((current) => (current.length ? current : demoRecentSales));
+    setGroups([]);
+    setProducts([]);
+    setReport(createEmptyReport());
+    setRecentSales([]);
     setActiveView("admin");
     setAuthForm(initialAuthForm);
     setStatus("Admin oficial conectado. Crie um evento para começar e depois selecione-o no cabeçalho.");
@@ -1631,10 +1708,13 @@ export default function SalesDashboard() {
     setUser(null);
     setProfile(null);
     setOrganizations([]);
-    setProducts(demoProducts);
-    setGroups(demoGroups);
-    setReport(demoReport);
-    setRecentSales(demoRecentSales);
+    setProducts([]);
+    setGroups([]);
+    setReport(createEmptyReport());
+    setRecentSales([]);
+    setProductSalesByOrg({});
+    setCashierSalesByOrg({});
+    setActiveOrganizationId("");
     setCashierName("");
     setActiveView("cashier");
     setIsAuthReady(true);
@@ -1678,7 +1758,7 @@ export default function SalesDashboard() {
       setActiveOrganizationId(organization.id);
       setCashierName(getPreferredCashierName(organization));
       setAccessCodeForm((current) => ({ ...current, organizationId: organization.id }));
-      setStatus("Organização criada no modo demonstrativo.");
+      setStatus("Organização criada localmente.");
       return;
     }
 

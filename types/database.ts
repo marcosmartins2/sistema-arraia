@@ -73,6 +73,12 @@ export type SaleReport = {
   items_sold: number;
 };
 
+export type CashierSalesSummary = {
+  count: number;
+  revenue: number;
+  profit: number;
+};
+
 export type RecentSale = {
   id: string;
   organization_id?: string;
