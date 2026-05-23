@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.save-product]
 verify_jwt = false
+
+[functions.delete-product]
+verify_jwt = false

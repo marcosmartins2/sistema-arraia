@@ -17,6 +17,9 @@ export const updateOrganizationUrl =
 export const saveProductUrl =
   process.env.NEXT_PUBLIC_SAVE_PRODUCT_FUNCTION_URL ||
   (supabaseUrl ? `${supabaseUrl}/functions/v1/save-product` : "");
+export const deleteProductUrl =
+  process.env.NEXT_PUBLIC_DELETE_PRODUCT_FUNCTION_URL ||
+  (supabaseUrl ? `${supabaseUrl}/functions/v1/delete-product` : "");
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 

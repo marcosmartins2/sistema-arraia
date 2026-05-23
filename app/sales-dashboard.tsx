@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import Image from "next/image";
 import {
@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   dashboardDataUrl,
+  deleteProductUrl,
   isSupabaseConfigured,
   registerSaleUrl,
   saveProductUrl,
@@ -186,6 +187,15 @@ type ProductPromotionUpdate = {
 const ACCESS_CODE_LENGTH = 8;
 const ACCESS_CODE_ALLOWED_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
 const ACCESS_CODE_STORAGE_KEY = "vendas:accessCode";
+const STOCK_LOW_THRESHOLD = 10;
+
+type StockStatus = "out" | "low" | "ok";
+
+function getStockStatus(quantity: number): StockStatus {
+  if (quantity <= 0) return "out";
+  if (quantity <= STOCK_LOW_THRESHOLD) return "low";
+  return "ok";
+}
 
 function getAuthGuidance(mode: AuthMode) {
   return mode === "code"
@@ -384,6 +394,10 @@ export default function SalesDashboard() {
   const [cashierName, setCashierName] = useState("");
   const [activeView, setActiveView] = useState<DashboardView>("cashier");
   const [activeOrganizationId, setActiveOrganizationId] = useState("");
+  const activeOrganizationIdRef = useRef("");
+  useEffect(() => {
+    activeOrganizationIdRef.current = activeOrganizationId;
+  }, [activeOrganizationId]);
   const [productForm, setProductForm] = useState(initialProductForm);
   const [productDrafts, setProductDrafts] = useState<Record<string, ProductDraft>>({});
   const [status, setStatus] = useState(
@@ -391,14 +405,11 @@ export default function SalesDashboard() {
       ? "Conectando ao Supabase..."
       : getAuthGuidance("code"),
   );
-  const [isAuthReady, setIsAuthReady] = useState(() => {
-    if (!isSupabaseConfigured) return true;
-    if (typeof window === "undefined") return false;
-    return !window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY);
-  });
+  const [isAuthReady, setIsAuthReady] = useState(!isSupabaseConfigured);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingProduct, setIsCreatingProduct] = useState(false);
+  const isCreatingProductRef = useRef(false);
   const [savingProductId, setSavingProductId] = useState<string | null>(null);
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
@@ -439,15 +450,16 @@ export default function SalesDashboard() {
 
     const nextProfile = profileResult.data as Profile | null;
     const nextOrganizations = (organizationsResult.data ?? []) as Organization[];
+    const currentActiveOrganizationId = activeOrganizationIdRef.current;
     const organizationId =
-      nextOrganizations.find((organization) => organization.id === activeOrganizationId)?.id ??
+      nextOrganizations.find((organization) => organization.id === currentActiveOrganizationId)?.id ??
       nextOrganizations[0]?.id;
 
     setProfile(nextProfile);
     setOrganizations(nextOrganizations);
 
     if (!organizationId) {
-      setActiveOrganizationId("");
+      if (currentActiveOrganizationId !== "") setActiveOrganizationId("");
       setCashierName("");
       setGroups([]);
       setProducts([]);
@@ -466,7 +478,9 @@ export default function SalesDashboard() {
       return;
     }
 
-    setActiveOrganizationId(organizationId);
+    if (organizationId !== currentActiveOrganizationId) {
+      setActiveOrganizationId(organizationId);
+    }
     setCashierName((current) =>
       getPreferredCashierName(
         nextOrganizations.find((organization) => organization.id === organizationId),
@@ -734,7 +748,7 @@ export default function SalesDashboard() {
 
     return () => window.clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessCode, user?.id, activeOrganizationId]);
+  }, [accessCode, user?.id]);
 
   const activeProducts = useMemo(() => {
     if (!activeOrganizationId) return [];
@@ -1169,108 +1183,174 @@ export default function SalesDashboard() {
 
   async function createProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isCreatingProductRef.current) return;
+    isCreatingProductRef.current = true;
 
-    const name = productForm.name.trim();
-    const category = productForm.category.trim();
-    const responsibleName = productForm.responsibleName.trim();
-    const salePrice = parseNumber(productForm.salePrice);
-    const unitCost = parseNumber(productForm.unitCost);
-    const stockQuantity = parseNumber(productForm.stockQuantity);
+    try {
+      const name = productForm.name.trim();
+      const category = productForm.category.trim();
+      const responsibleName = productForm.responsibleName.trim();
+      const salePrice = parseNumber(productForm.salePrice);
+      const unitCost = parseNumber(productForm.unitCost);
+      const stockQuantity = parseNumber(productForm.stockQuantity);
 
-    if (
-      !name ||
-      !category ||
-      !responsibleName ||
-      !Number.isFinite(salePrice) ||
-      !Number.isFinite(unitCost) ||
-      !Number.isFinite(stockQuantity)
-    ) {
-      setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque.");
-      return;
-    }
+      if (
+        !name ||
+        !category ||
+        !responsibleName ||
+        !Number.isFinite(salePrice) ||
+        !Number.isFinite(unitCost) ||
+        !Number.isFinite(stockQuantity)
+      ) {
+        setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque.");
+        return;
+      }
 
-    if (salePrice < 0 || unitCost < 0 || stockQuantity < 0) {
-      setStatus("Valores de venda, custo e estoque não podem ser negativos.");
-      return;
-    }
+      if (salePrice < 0 || unitCost < 0 || stockQuantity < 0) {
+        setStatus("Valores de venda, custo e estoque não podem ser negativos.");
+        return;
+      }
 
-    if (!activeOrganizationId) {
-      setStatus("Selecione ou crie uma organização antes de cadastrar produtos.");
-      return;
-    }
+      if (!activeOrganizationId) {
+        setStatus("Selecione ou crie uma organização antes de cadastrar produtos.");
+        return;
+      }
 
-    if (accessCode && saveProductUrl) {
-      setIsCreatingProduct(true);
-      setStatus("Cadastrando produto...");
-      const saved = await saveProductViaEdgeFunction({
-        responsible_name: responsibleName,
+      if (accessCode && saveProductUrl) {
+        setIsCreatingProduct(true);
+        setStatus("Cadastrando produto...");
+        const saved = await saveProductViaEdgeFunction({
+          responsible_name: responsibleName,
+          name,
+          category,
+          sale_price: salePrice,
+          unit_cost: unitCost,
+          stock_quantity: stockQuantity,
+        });
+        setIsCreatingProduct(false);
+        if (!saved) return;
+        setProductForm(initialProductForm);
+        setStatus("Produto cadastrado e disponível no caixa.");
+        return;
+      }
+
+      const responsibleGroup = await ensureResponsibleGroup(responsibleName);
+
+      if (!responsibleGroup) {
+        return;
+      }
+
+      const productPayload = {
+        organization_id: activeOrganizationId,
+        group_id: responsibleGroup.id,
         name,
         category,
         sale_price: salePrice,
+        original_sale_price: null,
         unit_cost: unitCost,
-        stock_quantity: stockQuantity,
-      });
-      setIsCreatingProduct(false);
-      if (!saved) return;
-      setProductForm(initialProductForm);
-      setStatus("Produto cadastrado e disponível no caixa.");
-      return;
-    }
-
-    const responsibleGroup = await ensureResponsibleGroup(responsibleName);
-
-    if (!responsibleGroup) {
-      return;
-    }
-
-    const productPayload = {
-      organization_id: activeOrganizationId,
-      group_id: responsibleGroup.id,
-      name,
-      category,
-      sale_price: salePrice,
-      original_sale_price: null,
-      unit_cost: unitCost,
-      stock_quantity: Math.floor(stockQuantity),
-      is_active: true,
-    };
-
-    if (isLocalOnlySession) {
-      const product: Product = {
-        id: crypto.randomUUID(),
-        ...productPayload,
-        group: responsibleGroup,
+        stock_quantity: Math.floor(stockQuantity),
+        is_active: true,
       };
 
-      setProducts((current) => [...current, product].sort((a, b) => a.name.localeCompare(b.name)));
+      if (isLocalOnlySession) {
+        const product: Product = {
+          id: crypto.randomUUID(),
+          ...productPayload,
+          group: responsibleGroup,
+        };
+
+        setProducts((current) => [...current, product].sort((a, b) => a.name.localeCompare(b.name)));
+        setProductForm(initialProductForm);
+        setStatus("Produto cadastrado e disponível no caixa.");
+        return;
+      }
+
+      if (!supabase) return;
+
+      setIsCreatingProduct(true);
+      setStatus("Cadastrando produto...");
+
+      const result = await supabase
+        .from("products")
+        .insert(productPayload)
+        .select("*, group:groups!products_group_id_fkey(*)")
+        .single();
+
+      setIsCreatingProduct(false);
+
+      if (result.error) {
+        setStatus(`Não foi possível cadastrar o produto: ${result.error.message}`);
+        return;
+      }
+
+      setProducts((current) =>
+        [...current, result.data as Product].sort((a, b) => a.name.localeCompare(b.name)),
+      );
       setProductForm(initialProductForm);
       setStatus("Produto cadastrado e disponível no caixa.");
+    } finally {
+      isCreatingProductRef.current = false;
+    }
+  }
+
+  async function deleteProduct(productId: string) {
+    const product = products.find((item) => item.id === productId);
+    if (!product) return;
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Excluir o produto "${product.name}"? Ele some do caixa, mas o histórico de vendas é mantido.`,
+      );
+      if (!confirmed) return;
+    }
+
+    const applyLocal = () => {
+      setProducts((current) => current.filter((item) => item.id !== productId));
+    };
+
+    if (accessCode && deleteProductUrl) {
+      let response: Response;
+      try {
+        response = await fetch(deleteProductUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_code: accessCode, product_id: productId }),
+        });
+      } catch {
+        setStatus(
+          "Não consegui alcançar o servidor para excluir. Verifique se a edge function 'delete-product' está deployada.",
+        );
+        return;
+      }
+      const responsePayload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setStatus(responsePayload?.error ?? "Não foi possível excluir o produto.");
+        return;
+      }
+      applyLocal();
+      setStatus("Produto excluído.");
       return;
     }
 
-    if (!supabase) return;
-
-    setIsCreatingProduct(true);
-    setStatus("Cadastrando produto...");
+    if (isLocalOnlySession || !supabase) {
+      applyLocal();
+      setStatus("Produto excluído localmente.");
+      return;
+    }
 
     const result = await supabase
       .from("products")
-      .insert(productPayload)
-      .select("*, group:groups!products_group_id_fkey(*)")
-      .single();
-
-    setIsCreatingProduct(false);
+      .update({ is_active: false })
+      .eq("id", productId)
+      .eq("organization_id", activeOrganizationId);
 
     if (result.error) {
-      setStatus(`Não foi possível cadastrar o produto: ${result.error.message}`);
+      setStatus(`Não foi possível excluir: ${result.error.message}`);
       return;
     }
 
-    setProducts((current) =>
-      [...current, result.data as Product].sort((a, b) => a.name.localeCompare(b.name)),
-    );
-    setProductForm(initialProductForm);
-    setStatus("Produto cadastrado e disponível no caixa.");
+    applyLocal();
+    setStatus("Produto excluído.");
   }
 
   function resetProductDraft(productId: string) {
@@ -1785,8 +1865,13 @@ export default function SalesDashboard() {
 
     setOrganizationForm(initialOrganizationForm);
     setOrganizationCashiers([""]);
-    setActiveOrganizationId((result.data as Organization).id);
-    await loadData();
+    const createdOrganization = result.data as Organization;
+    setOrganizations((current) =>
+      current.some((organization) => organization.id === createdOrganization.id)
+        ? current
+        : [...current, createdOrganization].sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    setActiveOrganizationId(createdOrganization.id);
     setStatus("Organização criada.");
   }
 
@@ -2046,6 +2131,7 @@ export default function SalesDashboard() {
                 savingProductId={savingProductId}
                 onChangeDraft={updateProductDraft}
                 onSave={saveProductChanges}
+                onDelete={deleteProduct}
                 onResetDraft={resetProductDraft}
                 onStatusChange={setStatus}
               />
@@ -3062,6 +3148,7 @@ function ProductForm({
 
 function EditableProductList({
   onChangeDraft,
+  onDelete,
   onResetDraft,
   onSave,
   onStatusChange,
@@ -3070,6 +3157,7 @@ function EditableProductList({
   savingProductId,
 }: {
   onChangeDraft: (product: Product, field: keyof ProductDraft, value: string) => void;
+  onDelete: (productId: string) => void | Promise<void>;
   onResetDraft: (productId: string) => void;
   onSave: (
     productId: string,
@@ -3242,8 +3330,18 @@ function EditableProductList({
           return (
             <article
               key={product.id}
-              className="rounded-md border border-[#d7e3f8] bg-white p-4 shadow-sm shadow-[#0b3a75]/5"
+              className="relative rounded-md border border-[#d7e3f8] bg-white p-4 pr-12 shadow-sm shadow-[#0b3a75]/5"
             >
+              <button
+                type="button"
+                onClick={() => void onDelete(product.id)}
+                disabled={savingProductId === product.id}
+                aria-label={`Excluir ${product.name}`}
+                title="Excluir produto"
+                className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#fbe5e5] bg-white text-red-500 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <X size={14} />
+              </button>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <p className="break-words text-base font-bold text-[#10233f]">{product.name}</p>
@@ -3296,7 +3394,19 @@ function EditableProductList({
                   </div>
                   <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
                     <p className="text-slate-500">Estoque</p>
-                    <p className="font-semibold">{product.stock_quantity}</p>
+                    <p
+                      className={`font-semibold ${
+                        getStockStatus(product.stock_quantity) === "out"
+                          ? "text-red-600"
+                          : getStockStatus(product.stock_quantity) === "low"
+                            ? "text-amber-600"
+                            : ""
+                      }`}
+                    >
+                      {product.stock_quantity}
+                      {getStockStatus(product.stock_quantity) === "out" && " • esgotado"}
+                      {getStockStatus(product.stock_quantity) === "low" && " • acabando"}
+                    </p>
                   </div>
                   <div className="rounded-md bg-[#f8fbff] px-3 py-2 text-sm">
                     <p className="text-slate-500">Lucro</p>
@@ -3521,6 +3631,13 @@ function ProductGrid({
         const originalSalePrice =
           typeof product.original_sale_price === "number" ? product.original_sale_price : null;
         const hasPriceChange = originalSalePrice !== null && originalSalePrice !== product.sale_price;
+        const stockStatus = getStockStatus(product.stock_quantity);
+        const stockColorClass =
+          stockStatus === "out"
+            ? "text-red-600"
+            : stockStatus === "low"
+              ? "text-amber-600"
+              : "";
         const content = (
           <>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -3534,6 +3651,16 @@ function ProductGrid({
                 )}
               </div>
               <div className="flex w-fit shrink-0 flex-wrap items-center justify-end gap-2">
+                {stockStatus === "out" && (
+                  <span className="rounded bg-red-100 px-2 py-1 text-xs font-bold uppercase text-red-700">
+                    Esgotado
+                  </span>
+                )}
+                {stockStatus === "low" && (
+                  <span className="rounded bg-amber-100 px-2 py-1 text-xs font-bold uppercase text-amber-700">
+                    Acabando
+                  </span>
+                )}
                 {hasPriceChange && (
                   <span className="rounded bg-[#f1f5f9] px-2 py-1 text-sm font-bold text-slate-400 line-through">
                     {currency.format(originalSalePrice)}
@@ -3557,7 +3684,7 @@ function ProductGrid({
               </div>
               <div className="min-w-0">
                 <dt className="text-slate-500">Estoque</dt>
-                <dd className="font-semibold">{product.stock_quantity}</dd>
+                <dd className={`font-semibold ${stockColorClass}`}>{product.stock_quantity}</dd>
               </div>
             </dl>
           </>
@@ -3566,12 +3693,14 @@ function ProductGrid({
         const stripe = index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]";
 
         if (mode === "sale") {
+          const isOut = stockStatus === "out";
           return (
             <button
               key={product.id}
               type="button"
               onClick={() => onProductClick?.(product)}
-              className={`min-h-32 rounded-md border border-[#d7e3f8] p-4 text-left shadow-sm shadow-[#0b3a75]/5 transition hover:border-[#2563eb] hover:shadow-md hover:shadow-[#0b3a75]/10 ${stripe}`}
+              disabled={isOut}
+              className={`min-h-32 rounded-md border border-[#d7e3f8] p-4 text-left shadow-sm shadow-[#0b3a75]/5 transition hover:border-[#2563eb] hover:shadow-md hover:shadow-[#0b3a75]/10 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-[#d7e3f8] disabled:hover:shadow-sm ${stripe}`}
             >
               {content}
             </button>
