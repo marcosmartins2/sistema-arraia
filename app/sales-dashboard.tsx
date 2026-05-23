@@ -415,6 +415,25 @@ export default function SalesDashboard() {
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(
+    null,
+  );
+
+  function showError(message: string) {
+    setNotice({ tone: "error", message });
+    setStatus(message);
+  }
+
+  function showSuccess(message: string) {
+    setNotice({ tone: "success", message });
+    setStatus(message);
+  }
+
+  useEffect(() => {
+    if (!notice || notice.tone === "error") return;
+    const timer = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   const isOfficialAdminSession = user?.id === officialAdmin.id;
   const isLocalOnlySession =
     isOfficialAdminSession || Boolean(accessCode) || !isSupabaseConfigured || !supabase;
@@ -444,7 +463,7 @@ export default function SalesDashboard() {
     ]);
 
     if (profileResult.error || organizationsResult.error) {
-      setStatus("Não foi possível carregar as organizações. Confira as migrations e o login.");
+      showError("Não foi possível carregar as organizações. Confira as migrations e o login.");
       return;
     }
 
@@ -534,7 +553,7 @@ export default function SalesDashboard() {
     ]);
 
     if (groupsResult.error || productsResult.error || reportResult.error || salesResult.error) {
-      setStatus("Não foi possível carregar tudo. Confira as variáveis de ambiente e migrations.");
+      showError("Não foi possível carregar tudo. Confira as variáveis de ambiente e migrations.");
       return;
     }
 
@@ -610,7 +629,7 @@ export default function SalesDashboard() {
     }
 
     if (!dashboardDataUrl) {
-      setStatus("Esse código não está cadastrado entre os acessos ativos.");
+      showError("Esse código não está cadastrado entre os acessos ativos.");
       return;
     }
 
@@ -624,7 +643,7 @@ export default function SalesDashboard() {
     const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
-      setStatus(payload?.error ?? "Não foi possível carregar os dados do código.");
+      showError(payload?.error ?? "Não foi possível carregar os dados do código.");
       return;
     }
 
@@ -715,7 +734,7 @@ export default function SalesDashboard() {
         applyAccessCodePayload(normalized, payload);
         setStatus("Sessão restaurada.");
       } catch {
-        if (!cancelled) setStatus("Não consegui restaurar a sessão. Faça login novamente.");
+        if (!cancelled) showError("Não consegui restaurar a sessão. Faça login novamente.");
       } finally {
         if (!cancelled) setIsAuthReady(true);
       }
@@ -822,7 +841,7 @@ export default function SalesDashboard() {
         .update({ is_active: isActive })
         .eq("id", organizationId);
       if (orgResult.error) {
-        setStatus(`Não foi possível atualizar a festa: ${orgResult.error.message}`);
+        showError(`Não foi possível atualizar a festa: ${orgResult.error.message}`);
         return;
       }
       const codesResult = await supabase
@@ -830,7 +849,7 @@ export default function SalesDashboard() {
         .update({ is_active: isActive })
         .eq("organization_id", organizationId);
       if (codesResult.error) {
-        setStatus(`Festa atualizada, mas falhou nos códigos: ${codesResult.error.message}`);
+        showError(`Festa atualizada, mas falhou nos códigos: ${codesResult.error.message}`);
         return;
       }
     }
@@ -869,7 +888,7 @@ export default function SalesDashboard() {
       .filter((item) => item.length > 0);
 
     if (!name) {
-      setStatus("O nome do evento nao pode ficar vazio.");
+      showError("O nome do evento nao pode ficar vazio.");
       return false;
     }
 
@@ -902,7 +921,7 @@ export default function SalesDashboard() {
         });
       } catch {
         setIsSavingSettings(false);
-        setStatus(
+        showError(
           "Nao foi possivel alcancar o servidor de configuracoes. Verifique se a edge function 'update-organization' esta deployada.",
         );
         return false;
@@ -912,7 +931,7 @@ export default function SalesDashboard() {
       setIsSavingSettings(false);
 
       if (!response.ok) {
-        setStatus(responsePayload?.error ?? "Nao foi possivel salvar as alteracoes.");
+        showError(responsePayload?.error ?? "Nao foi possivel salvar as alteracoes.");
         return false;
       }
 
@@ -935,7 +954,7 @@ export default function SalesDashboard() {
     setIsSavingSettings(false);
 
     if (result.error) {
-      setStatus(`Nao foi possivel salvar: ${result.error.message}`);
+      showError(`Nao foi possivel salvar: ${result.error.message}`);
       return false;
     }
 
@@ -959,7 +978,7 @@ export default function SalesDashboard() {
       setStatus("Excluindo festa...");
       const result = await supabase.from("organizations").delete().eq("id", organizationId);
       if (result.error) {
-        setStatus(`Não foi possível excluir a festa: ${result.error.message}`);
+        showError(`Não foi possível excluir a festa: ${result.error.message}`);
         return;
       }
     }
@@ -982,7 +1001,7 @@ export default function SalesDashboard() {
       setCart([]);
     }
 
-    setStatus("Festa excluída.");
+    showSuccess("Festa excluída.");
   }
 
   async function deleteAccessCode(codeId: string) {
@@ -999,7 +1018,7 @@ export default function SalesDashboard() {
     if (!isLocalOnlySession && supabase) {
       const result = await supabase.from("organization_access_codes").delete().eq("id", codeId);
       if (result.error) {
-        setStatus(`Não foi possível excluir o código: ${result.error.message}`);
+        showError(`Não foi possível excluir o código: ${result.error.message}`);
         return;
       }
     }
@@ -1008,12 +1027,12 @@ export default function SalesDashboard() {
     setLastGeneratedAccessCode((current) =>
       current?.code === deletedCode.code ? null : current,
     );
-    setStatus("Código excluído.");
+    showSuccess("Código excluído.");
   }
 
   function deleteSystemAccount(accountId: string) {
     if (accountId === officialAdmin.id) {
-      setStatus("A conta admin principal não pode ser excluída.");
+      showError("A conta admin principal não pode ser excluída.");
       return;
     }
 
@@ -1025,7 +1044,7 @@ export default function SalesDashboard() {
           : organization,
       ),
     );
-    setStatus("Conta de grupo removida.");
+    showSuccess("Conta de grupo removida.");
   }
 
   function addToCart(product: Product) {
@@ -1087,7 +1106,7 @@ export default function SalesDashboard() {
     const normalizedResponsibleName = responsibleName.trim();
 
     if (!normalizedResponsibleName) {
-      setStatus("Informe quem é o responsável por fazer e vender esse produto.");
+      showError("Informe quem é o responsável por fazer e vender esse produto.");
       return null;
     }
 
@@ -1129,7 +1148,7 @@ export default function SalesDashboard() {
       .single();
 
     if (groupResult.error) {
-      setStatus(`Não foi possível salvar o responsável: ${groupResult.error.message}`);
+      showError(`Não foi possível salvar o responsável: ${groupResult.error.message}`);
       return null;
     }
 
@@ -1162,7 +1181,7 @@ export default function SalesDashboard() {
         body: JSON.stringify({ access_code: accessCode, product: payload }),
       });
     } catch {
-      setStatus(
+      showError(
         "Não consegui alcançar o servidor para salvar o produto. Verifique se a edge function 'save-product' está deployada.",
       );
       return false;
@@ -1171,7 +1190,7 @@ export default function SalesDashboard() {
     const responsePayload = await response.json().catch(() => null);
 
     if (!response.ok) {
-      setStatus(responsePayload?.error ?? "Não foi possível salvar o produto.");
+      showError(responsePayload?.error ?? "Não foi possível salvar o produto.");
       return false;
     }
 
@@ -1219,17 +1238,17 @@ export default function SalesDashboard() {
         !Number.isFinite(unitCost) ||
         !Number.isFinite(stockQuantity)
       ) {
-        setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque.");
+        showError("Preencha nome, categoria, responsável, valor de venda, custo e estoque.");
         return;
       }
 
       if (salePrice < 0 || unitCost < 0 || stockQuantity < 0) {
-        setStatus("Valores de venda, custo e estoque não podem ser negativos.");
+        showError("Valores de venda, custo e estoque não podem ser negativos.");
         return;
       }
 
       if (!activeOrganizationId) {
-        setStatus("Selecione ou crie uma organização antes de cadastrar produtos.");
+        showError("Selecione ou crie uma organização antes de cadastrar produtos.");
         return;
       }
 
@@ -1247,7 +1266,7 @@ export default function SalesDashboard() {
         setIsCreatingProduct(false);
         if (!saved) return;
         setProductForm(initialProductForm);
-        setStatus("Produto cadastrado e disponível no caixa.");
+        showSuccess("Produto cadastrado e disponível no caixa.");
         return;
       }
 
@@ -1278,7 +1297,7 @@ export default function SalesDashboard() {
 
         setProducts((current) => [...current, product].sort((a, b) => a.name.localeCompare(b.name)));
         setProductForm(initialProductForm);
-        setStatus("Produto cadastrado e disponível no caixa.");
+        showSuccess("Produto cadastrado e disponível no caixa.");
         return;
       }
 
@@ -1296,7 +1315,7 @@ export default function SalesDashboard() {
       setIsCreatingProduct(false);
 
       if (result.error) {
-        setStatus(`Não foi possível cadastrar o produto: ${result.error.message}`);
+        showError(`Não foi possível cadastrar o produto: ${result.error.message}`);
         return;
       }
 
@@ -1304,7 +1323,7 @@ export default function SalesDashboard() {
         [...current, result.data as Product].sort((a, b) => a.name.localeCompare(b.name)),
       );
       setProductForm(initialProductForm);
-      setStatus("Produto cadastrado e disponível no caixa.");
+      showSuccess("Produto cadastrado e disponível no caixa.");
     } finally {
       isCreatingProductRef.current = false;
     }
@@ -1334,18 +1353,18 @@ export default function SalesDashboard() {
           body: JSON.stringify({ access_code: accessCode, product_id: productId }),
         });
       } catch {
-        setStatus(
+        showError(
           "Não consegui alcançar o servidor para excluir. Verifique se a edge function 'delete-product' está deployada.",
         );
         return;
       }
       const responsePayload = await response.json().catch(() => null);
       if (!response.ok) {
-        setStatus(responsePayload?.error ?? "Não foi possível excluir o produto.");
+        showError(responsePayload?.error ?? "Não foi possível excluir o produto.");
         return;
       }
       applyLocal();
-      setStatus("Produto excluído.");
+      showSuccess("Produto excluído.");
       return;
     }
 
@@ -1362,12 +1381,12 @@ export default function SalesDashboard() {
       .eq("organization_id", activeOrganizationId);
 
     if (result.error) {
-      setStatus(`Não foi possível excluir: ${result.error.message}`);
+      showError(`Não foi possível excluir: ${result.error.message}`);
       return;
     }
 
     applyLocal();
-    setStatus("Produto excluído.");
+    showSuccess("Produto excluído.");
   }
 
   function resetProductDraft(productId: string) {
@@ -1405,12 +1424,12 @@ export default function SalesDashboard() {
       !Number.isFinite(unitCost) ||
       !Number.isFinite(stockQuantity)
     ) {
-      setStatus("Preencha nome, categoria, responsável, valor de venda, custo e estoque antes de salvar.");
+      showError("Preencha nome, categoria, responsável, valor de venda, custo e estoque antes de salvar.");
       return;
     }
 
     if (salePrice < 0 || unitCost < 0 || stockQuantity < 0) {
-      setStatus("Valores de venda, custo e estoque não podem ser negativos.");
+      showError("Valores de venda, custo e estoque não podem ser negativos.");
       return;
     }
 
@@ -1437,7 +1456,7 @@ export default function SalesDashboard() {
       setSavingProductId(null);
       if (!saved) return;
       resetProductDraft(productId);
-      setStatus("Produto atualizado e pronto para vender no caixa.");
+      showSuccess("Produto atualizado e pronto para vender no caixa.");
       return;
     }
 
@@ -1472,7 +1491,7 @@ export default function SalesDashboard() {
           .sort((a, b) => a.name.localeCompare(b.name)),
       );
       resetProductDraft(productId);
-      setStatus("Produto atualizado e pronto para vender no caixa.");
+      showSuccess("Produto atualizado e pronto para vender no caixa.");
       return;
     }
 
@@ -1489,7 +1508,7 @@ export default function SalesDashboard() {
     setSavingProductId(null);
 
     if (result.error) {
-      setStatus(`Não foi possível atualizar o produto: ${result.error.message}`);
+      showError(`Não foi possível atualizar o produto: ${result.error.message}`);
       return;
     }
 
@@ -1499,14 +1518,14 @@ export default function SalesDashboard() {
         .sort((a, b) => a.name.localeCompare(b.name)),
     );
     resetProductDraft(productId);
-    setStatus("Produto atualizado e pronto para vender no caixa.");
+    showSuccess("Produto atualizado e pronto para vender no caixa.");
   }
 
   async function finishSale() {
     if (!cart.length) return;
 
     if (!cashierName) {
-      setStatus("Selecione o vendedor do caixa antes de registrar a venda.");
+      showError("Selecione o vendedor do caixa antes de registrar a venda.");
       return;
     }
 
@@ -1578,7 +1597,7 @@ export default function SalesDashboard() {
 
     if (!accessToken && !accessCode) {
       setIsSaving(false);
-      setStatus("Entre com o código do evento para registrar vendas.");
+      showError("Entre com o código do evento para registrar vendas.");
       return;
     }
 
@@ -1608,13 +1627,13 @@ export default function SalesDashboard() {
 
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setStatus(payload?.error ?? "Falha ao registrar venda.");
+      showError(payload?.error ?? "Falha ao registrar venda.");
       return;
     }
 
     setCart([]);
     await loadData();
-    setStatus("Venda registrada com baixa de estoque.");
+    showSuccess("Venda registrada com baixa de estoque.");
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -1829,12 +1848,12 @@ export default function SalesDashboard() {
     const cashierNames = organizationCashiers.map((item) => item.trim()).filter(Boolean);
 
     if (!name || !slug) {
-      setStatus("Informe nome e sigla do evento.");
+      showError("Informe nome e sigla do evento.");
       return;
     }
 
     if (!eventDate || !responsibleGroup || cashierNames.length === 0) {
-      setStatus("Informe data, responsáveis e pelo menos um vendedor do caixa.");
+      showError("Informe data, responsáveis e pelo menos um vendedor do caixa.");
       return;
     }
 
@@ -1876,7 +1895,7 @@ export default function SalesDashboard() {
     setIsCreatingOrganization(false);
 
     if (result.error) {
-      setStatus(result.error.message);
+      showError(`Não foi possível criar a festa: ${result.error.message}`);
       return;
     }
 
@@ -1889,7 +1908,7 @@ export default function SalesDashboard() {
         : [...current, createdOrganization].sort((a, b) => a.name.localeCompare(b.name)),
     );
     setActiveOrganizationId(createdOrganization.id);
-    setStatus("Organização criada.");
+    showSuccess("Organização criada.");
   }
 
   async function createAccessCode(event: FormEvent<HTMLFormElement>) {
@@ -1903,7 +1922,7 @@ export default function SalesDashboard() {
     );
 
     if (!organizationId || !organization) {
-      setStatus("Selecione o evento para gerar o código.");
+      showError("Selecione o evento para gerar o código.");
       return;
     }
 
@@ -1933,7 +1952,7 @@ export default function SalesDashboard() {
       ]);
       setLastGeneratedAccessCode({ code, organizationId });
       setAccessCodeForm(initialAccessCodeForm);
-      setStatus(`Código único gerado para ${organization.name}: ${code}.`);
+      showSuccess(`Código único gerado para ${organization.name}: ${code}.`);
       return;
     }
 
@@ -1948,14 +1967,14 @@ export default function SalesDashboard() {
     setIsCreatingAccessCode(false);
 
     if (result.error) {
-      setStatus(result.error.message);
+      showError(`Não foi possível salvar o código: ${result.error.message}`);
       return;
     }
 
     setAccessCodeForm(initialAccessCodeForm);
     setLastGeneratedAccessCode({ code, organizationId });
     await loadData();
-    setStatus(`Código único gerado para ${organization.name}: ${code}.`);
+    showSuccess(`Código único gerado para ${organization.name}: ${code}.`);
   }
 
   if (isSupabaseConfigured && !isAuthReady) {
@@ -2259,6 +2278,30 @@ export default function SalesDashboard() {
           )}
         </div>
       </div>
+      {notice && (
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center px-4">
+          <div
+            role="alert"
+            className={`pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-md border px-4 py-3 shadow-lg ${
+              notice.tone === "error"
+                ? "border-red-200 bg-red-50 text-red-900"
+                : notice.tone === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                  : "border-blue-200 bg-blue-50 text-blue-900"
+            }`}
+          >
+            <p className="flex-1 text-sm leading-snug">{notice.message}</p>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="rounded p-0.5 text-current opacity-70 transition hover:opacity-100"
+              aria-label="Fechar aviso"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
       {isSettingsOpen && activeOrganization && (
         <SettingsModal
           key={activeOrganization.id}
