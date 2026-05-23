@@ -1,6 +1,6 @@
-# Sistema Arraia UFG
+# Gestão de Vendas
 
-Sistema serverless para controlar fichas, vendas, baixa de estoque e lucro da festa de arraia dos grupos estudantis da UFG.
+Sistema serverless para controlar fichas, vendas, baixa de estoque e lucro de eventos.
 
 ## Stack
 
@@ -31,7 +31,7 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 As migrations criam:
 
-- `groups`: grupos estudantis
+- `groups`: grupos do evento
 - `products`: produtos e fichas com preço, custo e estoque
 - `sales`: vendas registradas no caixa
 - `sale_items`: itens de cada venda

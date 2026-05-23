@@ -1,5 +1,5 @@
-import ArraiaDashboard from "@/app/arraia-dashboard";
+import SalesDashboard from "@/app/sales-dashboard";
 
 export default function Home() {
-  return <ArraiaDashboard />;
+  return <SalesDashboard />;
 }

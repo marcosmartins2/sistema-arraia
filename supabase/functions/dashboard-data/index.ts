@@ -61,7 +61,7 @@ Deno.serve(async (request) => {
       supabase.from("groups").select("*").eq("organization_id", organizationId).order("name"),
       supabase
         .from("products")
-        .select("*, group:groups(*)")
+        .select("*, group:groups!products_group_id_fkey(*)")
         .eq("organization_id", organizationId)
         .eq("is_active", true)
         .order("name"),
@@ -86,16 +86,23 @@ Deno.serve(async (request) => {
         .eq("organization_id", organizationId),
     ]);
 
-    if (
-      groupsResult.error ||
-      productsResult.error ||
-      reportResult.error ||
-      salesResult.error ||
-      itemsResult.error ||
-      allSalesResult.error
-    ) {
+    const queryErrors = Object.entries({
+      groups: groupsResult.error,
+      products: productsResult.error,
+      report: reportResult.error,
+      sales: salesResult.error,
+      saleItems: itemsResult.error,
+      cashierSales: allSalesResult.error,
+    })
+      .filter(([, error]) => error)
+      .map(([name, error]) => ({ name, message: error!.message, details: error }));
+
+    if (queryErrors.length > 0) {
       return Response.json(
-        { error: "Nao foi possivel carregar os dados." },
+        {
+          error: `Nao foi possivel carregar os dados (${queryErrors.map((q) => q.name).join(", ")}): ${queryErrors[0].message}`,
+          failures: queryErrors,
+        },
         { status: 400, headers: corsHeaders },
       );
     }

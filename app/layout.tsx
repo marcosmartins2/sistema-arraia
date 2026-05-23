@@ -18,7 +18,7 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Gestão de Eventos",
+  title: "Gestão de Vendas",
   description: "Plataforma para vendas, estoque e relatórios de eventos.",
   icons: {
     icon: "/icon.svg",

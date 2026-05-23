@@ -1,4 +1,4 @@
-project_id = "sistema-arraia"
+project_id = "gestao-de-vendas"
 
 [api]
 enabled = true
@@ -19,4 +19,7 @@ port = 54323
 verify_jwt = false
 
 [functions.dashboard-data]
+verify_jwt = false
+
+[functions.update-organization]
 verify_jwt = false

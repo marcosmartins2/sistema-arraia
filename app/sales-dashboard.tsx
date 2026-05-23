@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ShieldCheck,
   ShoppingBasket,
+  Settings,
   Ticket,
   Trash2,
   X,
@@ -42,6 +43,7 @@ import {
   isSupabaseConfigured,
   registerSaleUrl,
   supabase,
+  updateOrganizationUrl,
 } from "@/lib/supabase";
 import type {
   Group,
@@ -178,6 +180,7 @@ type ProductPromotionUpdate = {
 
 const ACCESS_CODE_LENGTH = 8;
 const ACCESS_CODE_ALLOWED_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+const ACCESS_CODE_STORAGE_KEY = "vendas:accessCode";
 
 function getAuthGuidance(mode: AuthMode) {
   return mode === "code"
@@ -347,7 +350,7 @@ function generateAccessCode(existingCodes: OrganizationAccessCode[]) {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
 }
 
-export default function ArraiaDashboard() {
+export default function SalesDashboard() {
   const [user, setUser] = useState<AppUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -387,13 +390,19 @@ export default function ArraiaDashboard() {
       ? "Conectando ao Supabase..."
       : getAuthGuidance("code"),
   );
-  const [isAuthReady, setIsAuthReady] = useState(!isSupabaseConfigured);
+  const [isAuthReady, setIsAuthReady] = useState(() => {
+    if (!isSupabaseConfigured) return true;
+    if (typeof window === "undefined") return false;
+    return !window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY);
+  });
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingProduct, setIsCreatingProduct] = useState(false);
   const [savingProductId, setSavingProductId] = useState<string | null>(null);
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const isOfficialAdminSession = user?.id === officialAdmin.id;
   const isLocalOnlySession =
     isOfficialAdminSession || Boolean(accessCode) || !isSupabaseConfigured || !supabase;
@@ -484,7 +493,7 @@ export default function ArraiaDashboard() {
       supabase.from("groups").select("*").eq("organization_id", organizationId).order("name"),
       supabase
         .from("products")
-        .select("*, group:groups(*)")
+        .select("*, group:groups!products_group_id_fkey(*)")
         .eq("organization_id", organizationId)
         .eq("is_active", true)
         .order("name"),
@@ -527,6 +536,32 @@ export default function ArraiaDashboard() {
       [organizationId]: aggregateCashierSales(allSalesResult.data),
     }));
     setStatus("Dados sincronizados com Supabase.");
+  }
+
+  function applyAccessCodePayload(code: string, payload: any) {
+    const organization = payload.organization as Organization;
+    setAuthMessage(null);
+    setAccessCode(code);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ACCESS_CODE_STORAGE_KEY, code);
+    }
+    setUser({ id: `code-${code}`, email: `${code}@acesso.local` });
+    setProfile({ id: `code-${code}`, email: null, full_name: "Equipe de vendas", role: "member" });
+    setOrganizations([organization]);
+    setActiveOrganizationId(organization.id);
+    setCashierName(getPreferredCashierName(organization));
+    setGroups((payload.groups ?? []) as Group[]);
+    setProducts((payload.products ?? []) as Product[]);
+    setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
+    setRecentSales((payload.recentSales ?? []) as RecentSale[]);
+    setProductSalesByOrg((current) => ({
+      ...current,
+      [organization.id]: aggregateProductSales(payload.saleItems),
+    }));
+    setCashierSalesByOrg((current) => ({
+      ...current,
+      [organization.id]: aggregateCashierSales(payload.cashierSales),
+    }));
   }
 
   async function loadDataByAccessCode(code: string, { announce = true } = {}) {
@@ -601,27 +636,80 @@ export default function ArraiaDashboard() {
     if (!supabase) return;
 
     let isMounted = true;
+    const hasSavedAccessCode =
+      typeof window !== "undefined" &&
+      Boolean(window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY));
 
     supabase.auth.getSession().then(({ data }) => {
       if (!isMounted) return;
-      setUser(data.session?.user ?? null);
-      setIsAuthReady(true);
+      const sessionUser = data.session?.user ?? null;
+      if (sessionUser) setUser(sessionUser);
+      if (!hasSavedAccessCode) setIsAuthReady(true);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (!session?.user) {
+      const sessionUser = session?.user ?? null;
+      if (sessionUser) {
+        setUser(sessionUser);
+      } else if (!hasSavedAccessCode) {
+        setUser(null);
         setProfile(null);
         setOrganizations([]);
         setActiveView("cashier");
       }
-      setIsAuthReady(true);
+      if (!hasSavedAccessCode) setIsAuthReady(true);
     });
 
     return () => {
       isMounted = false;
       listener.subscription.unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!dashboardDataUrl) return;
+
+    const saved = window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY);
+    if (!saved) return;
+
+    const normalized = normalizeAccessCodeInput(saved);
+    if (!isAccessCodeFormatValid(normalized)) {
+      window.localStorage.removeItem(ACCESS_CODE_STORAGE_KEY);
+      return;
+    }
+
+    let cancelled = false;
+    setIsAuthReady(false);
+    (async () => {
+      try {
+        const response = await fetch(dashboardDataUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_code: normalized }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+
+        if (!response.ok || !payload?.organization) {
+          window.localStorage.removeItem(ACCESS_CODE_STORAGE_KEY);
+          setIsAuthReady(true);
+          return;
+        }
+
+        applyAccessCodePayload(normalized, payload);
+        setStatus("Sessão restaurada.");
+      } catch {
+        if (!cancelled) setStatus("Não consegui restaurar a sessão. Faça login novamente.");
+      } finally {
+        if (!cancelled) setIsAuthReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -763,6 +851,94 @@ export default function ArraiaDashboard() {
       setCart([]);
     }
     setStatus(isActive ? "Festa ativada." : "Festa inativada.");
+  }
+
+  async function saveOrganizationSettings(
+    organizationId: string,
+    patch: { name: string; cashier_names: string[] },
+  ) {
+    const target = organizations.find((organization) => organization.id === organizationId);
+    if (!target) return false;
+
+    const name = patch.name.trim();
+    const cashierNames = patch.cashier_names
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+
+    if (!name) {
+      setStatus("O nome do evento nao pode ficar vazio.");
+      return false;
+    }
+
+    setIsSavingSettings(true);
+
+    const applyLocal = () => {
+      setOrganizations((current) =>
+        current.map((organization) =>
+          organization.id === organizationId
+            ? { ...organization, name, cashier_names: cashierNames }
+            : organization,
+        ),
+      );
+      setCashierName((current) =>
+        getPreferredCashierName({ ...target, cashier_names: cashierNames }, current),
+      );
+    };
+
+    if (accessCode && updateOrganizationUrl) {
+      let response: Response;
+      try {
+        response = await fetch(updateOrganizationUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            access_code: accessCode,
+            name,
+            cashier_names: cashierNames,
+          }),
+        });
+      } catch {
+        setIsSavingSettings(false);
+        setStatus(
+          "Nao foi possivel alcancar o servidor de configuracoes. Verifique se a edge function 'update-organization' esta deployada.",
+        );
+        return false;
+      }
+
+      const responsePayload = await response.json().catch(() => null);
+      setIsSavingSettings(false);
+
+      if (!response.ok) {
+        setStatus(responsePayload?.error ?? "Nao foi possivel salvar as alteracoes.");
+        return false;
+      }
+
+      applyLocal();
+      setStatus("Configuracoes do evento atualizadas.");
+      return true;
+    }
+
+    if (isLocalOnlySession || !supabase) {
+      applyLocal();
+      setIsSavingSettings(false);
+      setStatus("Configuracoes atualizadas no modo demonstrativo.");
+      return true;
+    }
+
+    const result = await supabase
+      .from("organizations")
+      .update({ name, cashier_names: cashierNames })
+      .eq("id", organizationId);
+    setIsSavingSettings(false);
+
+    if (result.error) {
+      setStatus(`Nao foi possivel salvar: ${result.error.message}`);
+      return false;
+    }
+
+    applyLocal();
+    setStatus("Configuracoes do evento atualizadas.");
+    return true;
   }
 
   async function deleteOrganization(organizationId: string) {
@@ -1015,7 +1191,7 @@ export default function ArraiaDashboard() {
     const result = await supabase
       .from("products")
       .insert(productPayload)
-      .select("*, group:groups(*)")
+      .select("*, group:groups!products_group_id_fkey(*)")
       .single();
 
     setIsCreatingProduct(false);
@@ -1124,7 +1300,7 @@ export default function ArraiaDashboard() {
       .update(productPayload)
       .eq("id", productId)
       .eq("organization_id", activeOrganizationId)
-      .select("*, group:groups(*)")
+      .select("*, group:groups!products_group_id_fkey(*)")
       .single();
     setSavingProductId(null);
 
@@ -1334,26 +1510,7 @@ export default function ArraiaDashboard() {
         return;
       }
 
-      const organization = payload.organization as Organization;
-      setAuthMessage(null);
-      setAccessCode(code);
-      setUser({ id: `code-${code}`, email: `${code}@acesso.local` });
-      setProfile({ id: `code-${code}`, email: null, full_name: "Equipe de vendas", role: "member" });
-      setOrganizations([organization]);
-      setActiveOrganizationId(organization.id);
-      setCashierName(getPreferredCashierName(organization));
-      setGroups((payload.groups ?? []) as Group[]);
-      setProducts((payload.products ?? []) as Product[]);
-      setReport((payload.report as SaleReport | null) ?? { ...demoReport, organization_id: organization.id });
-      setRecentSales((payload.recentSales ?? []) as RecentSale[]);
-      setProductSalesByOrg((current) => ({
-        ...current,
-        [organization.id]: aggregateProductSales(payload.saleItems),
-      }));
-      setCashierSalesByOrg((current) => ({
-        ...current,
-        [organization.id]: aggregateCashierSales(payload.cashierSales),
-      }));
+      applyAccessCodePayload(code, payload);
       setAuthForm(initialAuthForm);
       setStatus("Código aceito. Dados sincronizados.");
       return;
@@ -1463,6 +1620,9 @@ export default function ArraiaDashboard() {
     setAuthMessage(null);
     setAccessCode("");
     setOrganizationCashiers([""]);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(ACCESS_CODE_STORAGE_KEY);
+    }
 
     if (supabase) {
       await supabase.auth.signOut();
@@ -1697,11 +1857,13 @@ export default function ArraiaDashboard() {
               </div>
             </div>
             <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:flex-wrap sm:items-center lg:w-auto lg:justify-end">
-              <OrganizationSwitcher
-                activeOrganizationId={activeOrganizationId}
-                organizations={organizations}
-                onChange={changeActiveOrganization}
-              />
+              {profile?.role === "admin" && (
+                <OrganizationSwitcher
+                  activeOrganizationId={activeOrganizationId}
+                  organizations={organizations}
+                  onChange={changeActiveOrganization}
+                />
+              )}
               <CashierSwitcher
                 cashierName={cashierName}
                 cashierNames={activeCashierNames}
@@ -1709,15 +1871,22 @@ export default function ArraiaDashboard() {
               />
               <button
                 type="button"
-                onClick={() => void loadData()}
+                onClick={() => window.location.reload()}
                 className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-[#2563eb] px-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
               >
                 <RefreshCw size={15} />
                 Atualizar
               </button>
-              <div className="hidden h-9 w-9 items-center justify-center rounded-full bg-[#eaf3ff] text-[#1d4ed8] lg:flex">
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(true)}
+                disabled={!activeOrganization}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#eaf3ff] text-[#1d4ed8] transition hover:bg-[#dceaff] disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Configuracoes do evento"
+                title="Configuracoes do evento"
+              >
                 <UserRound size={18} />
-              </div>
+              </button>
               <button
                 type="button"
                 onClick={() => void signOut()}
@@ -1907,6 +2076,19 @@ export default function ArraiaDashboard() {
           )}
         </div>
       </div>
+      {isSettingsOpen && activeOrganization && (
+        <SettingsModal
+          key={activeOrganization.id}
+          organization={activeOrganization}
+          knownCashiers={Object.keys(activeCashierSales)}
+          isSaving={isSavingSettings}
+          onClose={() => setIsSettingsOpen(false)}
+          onSave={async (patch) => {
+            const ok = await saveOrganizationSettings(activeOrganization.id, patch);
+            if (ok) setIsSettingsOpen(false);
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -2507,6 +2689,191 @@ function SectionHeader({
     <div className="flex min-h-12 flex-col gap-3 rounded-md border border-[#d7e3f8] border-l-4 border-l-[#2563eb] bg-white px-4 py-3 shadow-sm shadow-[#0b3a75]/5 sm:flex-row sm:items-center sm:justify-between">
       <h2 className="text-base font-bold text-[#10233f]">{title}</h2>
       {action}
+    </div>
+  );
+}
+
+function SettingsModal({
+  organization,
+  knownCashiers,
+  isSaving,
+  onClose,
+  onSave,
+}: {
+  organization: Organization;
+  knownCashiers: string[];
+  isSaving: boolean;
+  onClose: () => void;
+  onSave: (patch: { name: string; cashier_names: string[] }) => void | Promise<void>;
+}) {
+  const initialCashiers = (organization.cashier_names ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const [name, setName] = useState(organization.name);
+  const [cashiers, setCashiers] = useState<string[]>(initialCashiers);
+  const [newCashier, setNewCashier] = useState("");
+
+  const suggestions = knownCashiers
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item || item === "Sem identificação") return false;
+      return !cashiers.some((existing) => existing.toLowerCase() === item.toLowerCase());
+    });
+
+  function updateCashier(index: number, value: string) {
+    setCashiers((current) => current.map((item, itemIndex) => (itemIndex === index ? value : item)));
+  }
+
+  function addCashier(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    if (cashiers.some((existing) => existing.toLowerCase() === trimmed.toLowerCase())) return;
+    setCashiers((current) => [...current, trimmed]);
+    setNewCashier("");
+  }
+
+  function removeCashier(index: number) {
+    setCashiers((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-xl bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-2 text-[#0b3a75]">
+            <Settings size={18} />
+            <h2 className="text-base font-semibold">Configurações do evento</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+            aria-label="Fechar"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <form
+          className="space-y-5 px-5 py-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onSave({ name, cashier_names: cashiers });
+          }}
+        >
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Nome da festa
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-white px-3 text-sm text-[#10233f] outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+              required
+            />
+          </div>
+
+          <div className="space-y-3">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Vendedores cadastrados
+            </label>
+            {cashiers.length === 0 ? (
+              <p className="rounded-md border border-dashed border-[#d7e3f8] bg-[#f8fbff] px-3 py-3 text-xs text-slate-500">
+                Nenhum vendedor cadastrado ainda. Use o campo abaixo para adicionar.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {cashiers.map((cashier, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={cashier}
+                      onChange={(event) => updateCashier(index, event.target.value)}
+                      className="h-10 flex-1 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm text-[#10233f] outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCashier(index)}
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-[#fbe5e5] bg-white text-red-500 transition hover:bg-red-50"
+                      aria-label={`Remover vendedor ${index + 1}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newCashier}
+                onChange={(event) => setNewCashier(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addCashier(newCashier);
+                  }
+                }}
+                placeholder="Nome do vendedor"
+                className="h-10 flex-1 rounded-md border border-[#d7e3f8] bg-white px-3 text-sm text-[#10233f] outline-none transition focus:border-[#2563eb] focus:ring-2 focus:ring-[#2563eb]/15"
+              />
+              <button
+                type="button"
+                onClick={() => addCashier(newCashier)}
+                disabled={!newCashier.trim()}
+                className="inline-flex h-10 items-center justify-center gap-1 rounded-md bg-[#eaf3ff] px-3 text-xs font-semibold text-[#1d4ed8] transition hover:bg-[#dceaff] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus size={14} /> Adicionar
+              </button>
+            </div>
+
+            {suggestions.length > 0 && (
+              <div className="space-y-2 rounded-md border border-[#d7e3f8] bg-[#f8fbff] px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Detectados em vendas (toque pra cadastrar)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => addCashier(suggestion)}
+                      className="inline-flex items-center gap-1 rounded-full border border-[#d7e3f8] bg-white px-3 py-1 text-xs font-medium text-[#1d4ed8] transition hover:bg-[#eaf3ff]"
+                    >
+                      <Plus size={11} /> {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-[#d7e3f8] bg-white px-4 text-sm font-semibold text-slate-600 transition hover:bg-[#f0f6ff]"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-[#2563eb] px-4 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSaving ? "Salvando..." : "Salvar alterações"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

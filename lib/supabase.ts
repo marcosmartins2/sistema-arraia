@@ -11,6 +11,9 @@ export const adminUsersUrl =
 export const dashboardDataUrl =
   process.env.NEXT_PUBLIC_DASHBOARD_DATA_FUNCTION_URL ||
   (supabaseUrl ? `${supabaseUrl}/functions/v1/dashboard-data` : "");
+export const updateOrganizationUrl =
+  process.env.NEXT_PUBLIC_UPDATE_ORGANIZATION_FUNCTION_URL ||
+  (supabaseUrl ? `${supabaseUrl}/functions/v1/update-organization` : "");
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
