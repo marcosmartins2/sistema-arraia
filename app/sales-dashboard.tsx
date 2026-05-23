@@ -985,11 +985,28 @@ export default function SalesDashboard() {
     setStatus("Festa excluída.");
   }
 
-  function deleteAccessCode(codeId: string) {
+  async function deleteAccessCode(codeId: string) {
     const deletedCode = accessCodes.find((code) => code.id === codeId);
+    if (!deletedCode) return;
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Excluir o código "${deletedCode.code}"? Quem estiver usando perde o acesso.`,
+      );
+      if (!confirmed) return;
+    }
+
+    if (!isLocalOnlySession && supabase) {
+      const result = await supabase.from("organization_access_codes").delete().eq("id", codeId);
+      if (result.error) {
+        setStatus(`Não foi possível excluir o código: ${result.error.message}`);
+        return;
+      }
+    }
+
     setAccessCodes((current) => current.filter((code) => code.id !== codeId));
     setLastGeneratedAccessCode((current) =>
-      deletedCode && current?.code === deletedCode.code ? null : current,
+      current?.code === deletedCode.code ? null : current,
     );
     setStatus("Código excluído.");
   }
@@ -2464,7 +2481,7 @@ function AdminPanel({
   onChangeOrganizationForm: (field: keyof typeof initialOrganizationForm, value: string) => void;
   onCreateAccessCode: (event: FormEvent<HTMLFormElement>) => void;
   onCreateOrganization: (event: FormEvent<HTMLFormElement>) => void;
-  onDeleteAccessCode: (codeId: string) => void;
+  onDeleteAccessCode: (codeId: string) => void | Promise<void>;
   onDeleteOrganization: (organizationId: string) => void | Promise<void>;
   onDeleteSystemAccount: (accountId: string) => void;
   onUpdateOrganizationStatus: (organizationId: string, isActive: boolean) => void | Promise<void>;
