@@ -75,7 +75,7 @@ Deno.serve(async (request) => {
         .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
-        .limit(12),
+        .limit(200),
       supabase
         .from("sale_items")
         .select("product_id, quantity, sales!inner(organization_id)")

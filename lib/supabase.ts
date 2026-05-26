@@ -20,8 +20,28 @@ export const saveProductUrl =
 export const deleteProductUrl =
   process.env.NEXT_PUBLIC_DELETE_PRODUCT_FUNCTION_URL ||
   (supabaseUrl ? `${supabaseUrl}/functions/v1/delete-product` : "");
+export const deleteSaleUrl =
+  process.env.NEXT_PUBLIC_DELETE_SALE_FUNCTION_URL ||
+  (supabaseUrl ? `${supabaseUrl}/functions/v1/delete-sale` : "");
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+if (typeof window !== "undefined" && supabaseUrl) {
+  try {
+    const projectRef = new URL(supabaseUrl).hostname.split(".")[0];
+    const storageKey = `sb-${projectRef}-auth-token`;
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expires_at ?? 0);
+      if (expiresAt && expiresAt * 1000 < Date.now()) {
+        window.localStorage.removeItem(storageKey);
+      }
+    }
+  } catch {
+    // ignore — stored value is malformed, the SDK will overwrite it.
+  }
+}
 
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)

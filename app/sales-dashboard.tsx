@@ -31,6 +31,7 @@ import {
 import {
   dashboardDataUrl,
   deleteProductUrl,
+  deleteSaleUrl,
   isSupabaseConfigured,
   registerSaleUrl,
   saveProductUrl,
@@ -415,6 +416,8 @@ export default function SalesDashboard() {
   const [isCreatingAccessCode, setIsCreatingAccessCode] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [saleToDelete, setSaleToDelete] = useState<RecentSale | null>(null);
+  const [isDeletingSale, setIsDeletingSale] = useState(false);
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(
     null,
   );
@@ -538,10 +541,10 @@ export default function SalesDashboard() {
         .maybeSingle(),
       supabase
         .from("sales")
-        .select("id, created_at, cashier_name, payment_method, gross_total, profit_total")
+        .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
-        .limit(12),
+        .limit(200),
       supabase
         .from("sale_items")
         .select("product_id, quantity, sales!inner(organization_id)")
@@ -674,12 +677,24 @@ export default function SalesDashboard() {
       typeof window !== "undefined" &&
       Boolean(window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY));
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!isMounted) return;
-      const sessionUser = data.session?.user ?? null;
-      if (sessionUser) setUser(sessionUser);
-      if (!hasSavedAccessCode) setIsAuthReady(true);
-    });
+    supabase.auth
+      .getSession()
+      .then(async ({ data, error }) => {
+        if (!isMounted) return;
+        if (error) {
+          await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+          if (!hasSavedAccessCode) setIsAuthReady(true);
+          return;
+        }
+        const sessionUser = data.session?.user ?? null;
+        if (sessionUser) setUser(sessionUser);
+        if (!hasSavedAccessCode) setIsAuthReady(true);
+      })
+      .catch(async () => {
+        if (!isMounted) return;
+        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+        if (!hasSavedAccessCode) setIsAuthReady(true);
+      });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       const sessionUser = session?.user ?? null;
@@ -1327,6 +1342,65 @@ export default function SalesDashboard() {
     } finally {
       isCreatingProductRef.current = false;
     }
+  }
+
+  async function deleteSale(saleId: string) {
+    const sale = recentSales.find((item) => item.id === saleId);
+    if (!sale) return;
+
+    const applyLocal = () => {
+      setRecentSales((current) => current.filter((item) => item.id !== saleId));
+    };
+
+    if (isOfficialAdminSession || !isSupabaseConfigured || !deleteSaleUrl) {
+      applyLocal();
+      setStatus("Venda excluida localmente (sem persistencia).");
+      return;
+    }
+
+    let accessToken: string | undefined;
+    if (supabase) {
+      const sessionResult = await supabase.auth.getSession();
+      accessToken = sessionResult.data.session?.access_token;
+    }
+
+    if (!accessToken && !accessCode) {
+      showError("Entre com o código do evento ou faça login para excluir vendas.");
+      return;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(deleteSaleUrl, {
+        method: "POST",
+        headers: accessToken
+          ? {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            }
+          : { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sale_id: saleId,
+          organization_id: activeOrganizationId,
+          access_code: accessCode || undefined,
+        }),
+      });
+    } catch {
+      showError(
+        "Não consegui alcançar o servidor para excluir. Verifique se a edge function 'delete-sale' está deployada.",
+      );
+      return;
+    }
+
+    const responsePayload = await response.json().catch(() => null);
+    if (!response.ok) {
+      showError(responsePayload?.error ?? "Não foi possível excluir a venda.");
+      return;
+    }
+
+    applyLocal();
+    await loadData();
+    showSuccess("Venda excluída e estoque devolvido.");
   }
 
   async function deleteProduct(productId: string) {
@@ -2238,7 +2312,13 @@ export default function SalesDashboard() {
                   </button>
                 }
               />
-              <SalesList sales={activeRecentSales} />
+              <SalesList
+                sales={activeRecentSales}
+                onDelete={(saleId) => {
+                  const sale = activeRecentSales.find((item) => item.id === saleId);
+                  if (sale) setSaleToDelete(sale);
+                }}
+              />
             </section>
           )}
 
@@ -2312,6 +2392,25 @@ export default function SalesDashboard() {
           onSave={async (patch) => {
             const ok = await saveOrganizationSettings(activeOrganization.id, patch);
             if (ok) setIsSettingsOpen(false);
+          }}
+        />
+      )}
+      {saleToDelete && (
+        <DeleteSaleConfirm
+          sale={saleToDelete}
+          isDeleting={isDeletingSale}
+          onCancel={() => {
+            if (isDeletingSale) return;
+            setSaleToDelete(null);
+          }}
+          onConfirm={async () => {
+            setIsDeletingSale(true);
+            try {
+              await deleteSale(saleToDelete.id);
+            } finally {
+              setIsDeletingSale(false);
+              setSaleToDelete(null);
+            }
           }}
         />
       )}
@@ -3915,12 +4014,30 @@ function CartPanel({
   );
 }
 
-function SalesList({ sales }: { sales: RecentSale[] }) {
+function SalesList({
+  sales,
+  onDelete,
+}: {
+  sales: RecentSale[];
+  onDelete?: (saleId: string) => void;
+}) {
+  if (sales.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-[#bfd4f2] bg-white p-6 text-center text-sm text-slate-500 shadow-md shadow-[#0b3a75]/5">
+        Nenhuma venda registrada ainda. Volte ao Caixa para registrar a primeira.
+      </div>
+    );
+  }
+
+  const gridColumns = onDelete
+    ? "min-[420px]:grid-cols-[1fr_auto_auto_auto]"
+    : "min-[420px]:grid-cols-[1fr_auto_auto]";
+
   return (
     <div className="overflow-hidden rounded-md border border-[#d7e3f8] bg-white p-3 shadow-md shadow-[#0b3a75]/5 sm:p-4">
       <div className="divide-y divide-[#dfe8f7]">
         {sales.map((sale, index) => (
-          <div key={sale.id} className={`grid min-w-0 gap-2 rounded-md px-2 py-4 first:pt-3 last:pb-3 min-[420px]:grid-cols-[1fr_auto_auto] min-[420px]:items-center sm:gap-3 sm:px-3 ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}>
+          <div key={sale.id} className={`grid min-w-0 gap-2 rounded-md px-2 py-4 first:pt-3 last:pb-3 ${gridColumns} min-[420px]:items-center sm:gap-3 sm:px-3 ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}>
             <div className="min-w-0">
               <p className="font-medium text-[#10233f]">
                 {paymentLabels[sale.payment_method] ?? sale.payment_method}
@@ -3937,8 +4054,120 @@ function SalesList({ sales }: { sales: RecentSale[] }) {
             </div>
             <p className="font-bold min-[420px]:text-right">{currency.format(sale.gross_total)}</p>
             <p className="font-semibold text-[#2563eb] min-[420px]:text-right">+{currency.format(sale.profit_total)}</p>
+            {onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(sale.id)}
+                aria-label="Excluir venda"
+                title="Excluir venda"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-transparent text-slate-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 min-[420px]:justify-self-end"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function DeleteSaleConfirm({
+  sale,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  sale: RecentSale;
+  isDeleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [stage, setStage] = useState<1 | 2>(1);
+
+  const formattedDate = new Date(sale.created_at).toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md rounded-xl bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-2 text-red-700">
+            <Trash2 size={18} />
+            <h2 className="text-base font-semibold">Excluir venda</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isDeleting}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+            aria-label="Fechar"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5 text-sm text-slate-700">
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <p className="font-semibold text-[#10233f]">
+              {paymentLabels[sale.payment_method] ?? sale.payment_method} - {currency.format(sale.gross_total)}
+            </p>
+            <p className="text-xs text-slate-500">
+              {formattedDate} - {sale.cashier_name ?? "Sem caixa"}
+            </p>
+          </div>
+
+          {stage === 1 ? (
+            <p>
+              Tem certeza que deseja excluir esta venda? O estoque dos produtos vendidos será
+              devolvido.
+            </p>
+          ) : (
+            <p className="font-semibold text-red-700">
+              Última confirmação: esta ação é <span className="underline">irreversível</span>.
+              A venda e seus itens serão apagados permanentemente.
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isDeleting}
+            className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          {stage === 1 ? (
+            <button
+              type="button"
+              onClick={() => setStage(2)}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-red-600 px-3 text-sm font-semibold text-white transition hover:bg-red-700"
+            >
+              Excluir
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={isDeleting}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-red-700 px-3 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60"
+            >
+              {isDeleting ? "Excluindo..." : "Sim, excluir definitivamente"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
