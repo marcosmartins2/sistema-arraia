@@ -2459,20 +2459,20 @@ function AuthScreen({
   const [showPassword, setShowPassword] = useState(false);
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#050b1f] text-white">
+    <main className="relative min-h-[100svh] overflow-hidden bg-[#050b1f] text-white">
       <Image
         src="/images/login-tech-hero.png"
         alt=""
         fill
         priority
         sizes="100vw"
-        className="object-cover object-left opacity-82 lg:-translate-x-[34%] lg:-translate-y-[4%] lg:scale-125"
+        className="object-cover object-center opacity-90 sm:object-[35%_center] md:object-[40%_center] lg:object-left lg:opacity-82 lg:-translate-x-[34%] lg:-translate-y-[4%] lg:scale-125"
       />
-      <div className="absolute inset-0 bg-[#050b1f]/48 lg:bg-[#050b1f]/28" />
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,11,31,0.22)_0%,rgba(5,11,31,0.82)_58%,#050b1f_100%)] lg:bg-[linear-gradient(90deg,rgba(5,11,31,0.08)_0%,rgba(5,11,31,0.22)_36%,rgba(5,11,31,0.84)_62%,#050b1f_100%)]" />
+      <div className="absolute inset-0 bg-[#050b1f]/30 md:bg-[#050b1f]/24 lg:bg-[#050b1f]/28" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,11,31,0.05)_0%,rgba(5,11,31,0.45)_70%,rgba(5,11,31,0.85)_100%)] md:bg-[linear-gradient(180deg,rgba(5,11,31,0.04)_0%,rgba(5,11,31,0.32)_60%,rgba(5,11,31,0.7)_100%)] lg:bg-[linear-gradient(90deg,rgba(5,11,31,0.08)_0%,rgba(5,11,31,0.22)_36%,rgba(5,11,31,0.84)_62%,#050b1f_100%)]" />
 
-      <section className="relative z-10 flex min-h-screen items-center px-3 py-6 sm:px-8 lg:px-12">
-        <div className="mx-auto grid w-full max-w-6xl gap-8 lg:grid-cols-[1fr_minmax(360px,420px)] lg:items-center">
+      <section className="relative z-10 flex min-h-[100svh] items-center px-4 py-6 sm:px-6 md:px-8 lg:px-12">
+        <div className="mx-auto grid w-full max-w-6xl gap-8 md:gap-10 lg:grid-cols-[1fr_minmax(360px,420px)] lg:items-center">
           <div className="hidden max-w-2xl lg:block">
             <p className="font-[family-name:var(--font-display)] text-sm font-bold uppercase tracking-normal text-[#93c5fd]">
               Gestão de vendas
@@ -2484,7 +2484,7 @@ function AuthScreen({
               Monitore o caixa em tempo real, gerencie estoques e tenha relatórios precisos sem complicação. Transforme a gestão do seu evento em uma experiência profissional.
             </p>
           </div>
-          <div className="w-full rounded-md border border-white/16 bg-white/10 p-4 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-5">
+          <div className="mx-auto w-full max-w-md rounded-md border border-white/16 bg-white/10 p-4 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-5 md:max-w-lg lg:mx-0 lg:max-w-none">
             <div className="flex min-w-0 items-center gap-3 border-b border-white/12 pb-4">
               <div className="flex h-11 w-11 items-center justify-center rounded-md bg-[#7c3aed] text-white shadow-lg shadow-[#7c3aed]/30">
                 <ShoppingBasket size={23} strokeWidth={2.4} />
