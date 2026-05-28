@@ -7,6 +7,7 @@ const corsHeaders = {
 };
 
 
+
 type AdminPayload =
   | {
       action: "create_user";
@@ -17,6 +18,7 @@ type AdminPayload =
       organization_id?: string;
       organization_role?: "owner" | "manager" | "member";
     }
+  
   | {
       action: "delete_user";
       user_id: string;
