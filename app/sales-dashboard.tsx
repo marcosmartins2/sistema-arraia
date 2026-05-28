@@ -670,19 +670,20 @@ export default function SalesDashboard() {
   }
 
   useEffect(() => {
-    if (!supabase) return;
+    const client = supabase;
+    if (!client) return;
 
     let isMounted = true;
     const hasSavedAccessCode =
       typeof window !== "undefined" &&
       Boolean(window.localStorage.getItem(ACCESS_CODE_STORAGE_KEY));
 
-    supabase.auth
+    client.auth
       .getSession()
       .then(async ({ data, error }) => {
         if (!isMounted) return;
         if (error) {
-          await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+          await client.auth.signOut({ scope: "local" }).catch(() => {});
           if (!hasSavedAccessCode) setIsAuthReady(true);
           return;
         }
@@ -692,11 +693,11 @@ export default function SalesDashboard() {
       })
       .catch(async () => {
         if (!isMounted) return;
-        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+        await client.auth.signOut({ scope: "local" }).catch(() => {});
         if (!hasSavedAccessCode) setIsAuthReady(true);
       });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = client.auth.onAuthStateChange((_event, session) => {
       const sessionUser = session?.user ?? null;
       if (sessionUser) {
         setUser(sessionUser);
