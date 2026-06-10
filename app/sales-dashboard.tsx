@@ -36,6 +36,7 @@ import {
   registerSaleUrl,
   saveProductUrl,
   supabase,
+  supabaseAnonKey,
   updateOrganizationUrl,
 } from "@/lib/supabase";
 import type {
@@ -113,16 +114,67 @@ const initialAccessCodeForm = {
   organizationId: "",
 };
 
+type ProductSalesTier = { price: number; quantity: number; isPromo: boolean };
+type ProductSalesStats = { total: number; promo: number; tiers: ProductSalesTier[] };
+
+function priceTierKey(price: number, isPromo: boolean) {
+  return `${price.toFixed(2)}|${isPromo ? 1 : 0}`;
+}
+
+function sortPriceTiers(tiers: ProductSalesTier[]) {
+  // Regular price first, then discounts; higher value first within each group.
+  return tiers.sort(
+    (a, b) => Number(a.isPromo) - Number(b.isPromo) || b.price - a.price,
+  );
+}
+
 function aggregateProductSales(
-  rows: Array<{ product_id?: string | null; quantity?: number | null }> | null | undefined,
-): Record<string, number> {
-  const result: Record<string, number> = {};
-  if (!rows) return result;
+  rows:
+    | Array<{
+        product_id?: string | null;
+        quantity?: number | null;
+        unit_price?: number | null;
+        is_promo?: boolean | null;
+      }>
+    | null
+    | undefined,
+): Record<string, ProductSalesStats> {
+  const accumulators: Record<
+    string,
+    { total: number; promo: number; tiers: Map<string, ProductSalesTier> }
+  > = {};
+  if (!rows) return {};
+
   for (const row of rows) {
     if (!row?.product_id) continue;
     const qty = Number(row.quantity ?? 0);
-    if (!Number.isFinite(qty)) continue;
-    result[row.product_id] = (result[row.product_id] ?? 0) + qty;
+    if (!Number.isFinite(qty) || qty === 0) continue;
+    const rawPrice = Number(row.unit_price ?? 0);
+    const price = Number.isFinite(rawPrice) ? rawPrice : 0;
+    const isPromo = Boolean(row.is_promo);
+
+    const accumulator =
+      accumulators[row.product_id] ?? { total: 0, promo: 0, tiers: new Map<string, ProductSalesTier>() };
+    accumulator.total += qty;
+    if (isPromo) accumulator.promo += qty;
+
+    const key = priceTierKey(price, isPromo);
+    const tier = accumulator.tiers.get(key);
+    if (tier) {
+      tier.quantity += qty;
+    } else {
+      accumulator.tiers.set(key, { price, quantity: qty, isPromo });
+    }
+    accumulators[row.product_id] = accumulator;
+  }
+
+  const result: Record<string, ProductSalesStats> = {};
+  for (const [productId, accumulator] of Object.entries(accumulators)) {
+    result[productId] = {
+      total: accumulator.total,
+      promo: accumulator.promo,
+      tiers: sortPriceTiers(Array.from(accumulator.tiers.values())),
+    };
   }
   return result;
 }
@@ -325,6 +377,35 @@ function getProductLineTotal(product: Product, quantity: number) {
   return quantity * product.sale_price - promotionalPackages * promotion.discountAmount;
 }
 
+// Splits a sold quantity into homogeneous price buckets, mirroring register_sale,
+// so the local-only session can build the same per-value report as the database.
+function getSaleValueBuckets(product: Product, quantity: number): ProductSalesTier[] {
+  const buckets: ProductSalesTier[] = [];
+  const promotion = getProductPromotion(product);
+  let regularUnits = quantity;
+
+  if (promotion && quantity >= promotion.minQuantity) {
+    const packages = Math.floor(quantity / promotion.minQuantity);
+    const promoUnits = packages * promotion.minQuantity;
+    regularUnits = quantity - promoUnits;
+    const packageTotal = getPromotionalPackageTotal(product, promotion);
+    buckets.push({
+      price: packageTotal / promotion.minQuantity,
+      quantity: promoUnits,
+      isPromo: true,
+    });
+  }
+
+  if (regularUnits > 0) {
+    const originalPrice =
+      typeof product.original_sale_price === "number" ? product.original_sale_price : null;
+    const isMarkdown = originalPrice !== null && originalPrice > product.sale_price;
+    buckets.push({ price: product.sale_price, quantity: regularUnits, isPromo: isMarkdown });
+  }
+
+  return buckets;
+}
+
 function getPromotionSummary(product: Product) {
   const promotion = getProductPromotion(product);
 
@@ -386,7 +467,7 @@ export default function SalesDashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [report, setReport] = useState<SaleReport>(() => createEmptyReport());
   const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
-  const [productSalesByOrg, setProductSalesByOrg] = useState<Record<string, Record<string, number>>>({});
+  const [productSalesByOrg, setProductSalesByOrg] = useState<Record<string, Record<string, ProductSalesStats>>>({});
   const [cashierSalesByOrg, setCashierSalesByOrg] = useState<Record<string, Record<string, CashierSalesSummary>>>({});
   const [isItemsBreakdownOpen, setIsItemsBreakdownOpen] = useState(false);
   const [isCashierBreakdownOpen, setIsCashierBreakdownOpen] = useState(false);
@@ -547,7 +628,7 @@ export default function SalesDashboard() {
         .limit(200),
       supabase
         .from("sale_items")
-        .select("product_id, quantity, sales!inner(organization_id)")
+        .select("product_id, quantity, unit_price, is_promo, sales!inner(organization_id)")
         .eq("sales.organization_id", organizationId),
       supabase
         .from("sales")
@@ -801,10 +882,17 @@ export default function SalesDashboard() {
   const activeProductSales = productSalesByOrg[activeOrganizationId] ?? {};
   const productSalesBreakdown = useMemo(() => {
     return activeProducts
-      .map((product) => ({
-        product,
-        quantity: activeProductSales[product.id] ?? 0,
-      }))
+      .map((product) => {
+        const stats = activeProductSales[product.id] ?? { total: 0, promo: 0, tiers: [] };
+        const quantity = stats.total;
+        const promoQuantity = Math.min(Math.max(0, stats.promo), quantity);
+        return {
+          product,
+          quantity,
+          promoQuantity,
+          tiers: stats.tiers,
+        };
+      })
       .sort((a, b) => b.quantity - a.quantity || a.product.name.localeCompare(b.product.name));
   }, [activeProducts, activeProductSales]);
 
@@ -1370,16 +1458,19 @@ export default function SalesDashboard() {
       return;
     }
 
+    const deleteSaleHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+      apikey: supabaseAnonKey,
+    };
+    if (accessToken) {
+      deleteSaleHeaders.Authorization = `Bearer ${accessToken}`;
+    }
+
     let response: Response;
     try {
       response = await fetch(deleteSaleUrl, {
         method: "POST",
-        headers: accessToken
-          ? {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${accessToken}`,
-            }
-          : { "Content-Type": "application/json" },
+        headers: deleteSaleHeaders,
         body: JSON.stringify({
           sale_id: saleId,
           organization_id: activeOrganizationId,
@@ -1644,7 +1735,25 @@ export default function SalesDashboard() {
       setProductSalesByOrg((current) => {
         const orgSales = { ...(current[activeOrganizationId] ?? {}) };
         for (const item of cart) {
-          orgSales[item.product.id] = (orgSales[item.product.id] ?? 0) + item.quantity;
+          const existing = orgSales[item.product.id] ?? { total: 0, promo: 0, tiers: [] };
+          const tiers = existing.tiers.map((tier) => ({ ...tier }));
+          let total = existing.total;
+          let promo = existing.promo;
+
+          for (const bucket of getSaleValueBuckets(item.product, item.quantity)) {
+            total += bucket.quantity;
+            if (bucket.isPromo) promo += bucket.quantity;
+            const existingTier = tiers.find(
+              (tier) => priceTierKey(tier.price, tier.isPromo) === priceTierKey(bucket.price, bucket.isPromo),
+            );
+            if (existingTier) {
+              existingTier.quantity += bucket.quantity;
+            } else {
+              tiers.push({ ...bucket });
+            }
+          }
+
+          orgSales[item.product.id] = { total, promo, tiers: sortPriceTiers(tiers) };
         }
         return { ...current, [activeOrganizationId]: orgSales };
       });
@@ -4179,10 +4288,16 @@ function ItemsBreakdownModal({
   totalItems,
   onClose,
 }: {
-  breakdown: Array<{ product: Product; quantity: number }>;
+  breakdown: Array<{
+    product: Product;
+    quantity: number;
+    promoQuantity: number;
+    tiers: ProductSalesTier[];
+  }>;
   totalItems: number;
   onClose: () => void;
 }) {
+  const hasAnyPromotion = breakdown.some((item) => item.promoQuantity > 0);
   return (
     <div
       role="dialog"
@@ -4203,6 +4318,18 @@ function ItemsBreakdownModal({
             <p className="mt-1 text-sm text-slate-500">
               Total no evento: <strong className="text-[#10233f]">{totalItems}</strong>
             </p>
+            {hasAnyPromotion && (
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs font-semibold">
+                <span className="inline-flex items-center gap-1.5 text-emerald-700">
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" aria-hidden />
+                  Vendas
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-amber-700">
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-500" aria-hidden />
+                  Promo
+                </span>
+              </div>
+            )}
           </div>
           <button
             type="button"
@@ -4218,19 +4345,60 @@ function ItemsBreakdownModal({
             <p className="text-sm text-slate-500">Nenhum produto cadastrado para esta organização.</p>
           ) : (
             <ul className="divide-y divide-[#e3ecfb]">
-              {breakdown.map(({ product, quantity }) => (
-                <li key={product.id} className="flex items-center justify-between gap-3 py-2.5">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-[#10233f]">{product.name}</p>
-                    {product.category && (
-                      <p className="truncate text-xs text-slate-500">{product.category}</p>
+              {breakdown.map(({ product, quantity, promoQuantity, tiers }) => {
+                const showTiers = tiers.length > 1 || promoQuantity > 0;
+                return (
+                  <li key={product.id} className="py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-[#10233f]">{product.name}</p>
+                        {product.category && (
+                          <p className="truncate text-xs text-slate-500">{product.category}</p>
+                        )}
+                      </div>
+                      <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
+                        {quantity}
+                      </span>
+                    </div>
+                    {showTiers && (
+                      <ul className="mt-2 space-y-1 border-l-2 border-[#e3ecfb] pl-3">
+                        {tiers.map((tier) => (
+                          <li
+                            key={priceTierKey(tier.price, tier.isPromo)}
+                            className="flex items-center justify-between gap-2 text-xs"
+                          >
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                className={`h-2 w-2 rounded-full ${
+                                  tier.isPromo ? "bg-amber-500" : "bg-emerald-500"
+                                }`}
+                                aria-hidden
+                              />
+                              <span className="font-semibold text-[#10233f]">
+                                {currency.format(tier.price)}
+                              </span>
+                              {tier.isPromo && (
+                                <span className="rounded bg-amber-50 px-1.5 py-0.5 font-bold text-amber-700">
+                                  promo
+                                </span>
+                              )}
+                            </span>
+                            <span
+                              className={`rounded-md px-2 py-0.5 font-bold ${
+                                tier.isPromo
+                                  ? "bg-amber-50 text-amber-700"
+                                  : "bg-emerald-50 text-emerald-700"
+                              }`}
+                            >
+                              {tier.quantity}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </div>
-                  <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
-                    {quantity}
-                  </span>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

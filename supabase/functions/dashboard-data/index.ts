@@ -78,7 +78,7 @@ Deno.serve(async (request) => {
         .limit(200),
       supabase
         .from("sale_items")
-        .select("product_id, quantity, sales!inner(organization_id)")
+        .select("product_id, quantity, unit_price, is_promo, sales!inner(organization_id)")
         .eq("sales.organization_id", organizationId),
       supabase
         .from("sales")
