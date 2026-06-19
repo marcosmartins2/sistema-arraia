@@ -72,13 +72,13 @@ Deno.serve(async (request) => {
         .maybeSingle(),
       supabase
         .from("sales")
-        .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total")
+        .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total, discount_total")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(200),
       supabase
         .from("sale_items")
-        .select("product_id, quantity, unit_price, is_promo, sales!inner(organization_id)")
+        .select("sale_id, product_id, quantity, unit_price, is_promo, product:products(name), sales!inner(organization_id)")
         .eq("sales.organization_id", organizationId),
       supabase
         .from("sales")

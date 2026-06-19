@@ -79,6 +79,11 @@ export type CashierSalesSummary = {
   profit: number;
 };
 
+export type RecentSaleItem = {
+  name: string;
+  quantity: number;
+};
+
 export type RecentSale = {
   id: string;
   organization_id?: string;
@@ -87,6 +92,8 @@ export type RecentSale = {
   payment_method: string;
   gross_total: number;
   profit_total: number;
+  discount_total?: number;
+  items?: RecentSaleItem[];
 };
 
 export type SaleItemDraft = {

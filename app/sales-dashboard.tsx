@@ -19,6 +19,7 @@ import {
   Plus,
   ReceiptText,
   RefreshCw,
+  Search,
   ShieldCheck,
   ShoppingBasket,
   Settings,
@@ -47,6 +48,7 @@ import type {
   Profile,
   Product,
   RecentSale,
+  RecentSaleItem,
   SaleItemDraft,
   SaleReport,
 } from "@/types/database";
@@ -205,6 +207,63 @@ function aggregateCashierSales(
   return result;
 }
 
+// Builds a per-sale "X produtos" summary from raw sale_items rows. A single product
+// can arrive split across price buckets (promo + regular), so quantities are summed
+// per product name to show the sale the way it was rung up.
+type SaleItemProduct = { name?: string | null } | null;
+
+function aggregateSaleItemsBySale(
+  rows:
+    | Array<{
+        sale_id?: string | null;
+        quantity?: number | null;
+        // Supabase types embedded relations as an array; a manual payload may send an object.
+        product?: SaleItemProduct | SaleItemProduct[];
+      }>
+    | null
+    | undefined,
+): Record<string, RecentSaleItem[]> {
+  const bySale: Record<string, Map<string, RecentSaleItem>> = {};
+  if (!rows) return {};
+
+  for (const row of rows) {
+    const saleId = row?.sale_id;
+    if (!saleId) continue;
+    const quantity = Number(row?.quantity ?? 0);
+    if (!Number.isFinite(quantity) || quantity === 0) continue;
+    const product = Array.isArray(row?.product) ? row?.product[0] : row?.product;
+    const name = product?.name?.trim() || "Item";
+
+    const items = bySale[saleId] ?? new Map<string, RecentSaleItem>();
+    const existing = items.get(name);
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      items.set(name, { name, quantity });
+    }
+    bySale[saleId] = items;
+  }
+
+  const result: Record<string, RecentSaleItem[]> = {};
+  for (const [saleId, items] of Object.entries(bySale)) {
+    result[saleId] = Array.from(items.values()).sort(
+      (a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name),
+    );
+  }
+  return result;
+}
+
+// Attaches the product summary (and keeps the saved discount) to each recent sale.
+function attachSaleItems(
+  sales: RecentSale[] | null | undefined,
+  itemsBySale: Record<string, RecentSaleItem[]>,
+): RecentSale[] {
+  return (sales ?? []).map((sale) => ({
+    ...sale,
+    items: itemsBySale[sale.id] ?? [],
+  }));
+}
+
 const officialAdmin = {
   id: "official-admin",
   email: "annalimonta@outlook.com",
@@ -284,6 +343,17 @@ function slugify(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+// Accent- and case-insensitive normalization so "cafe" matches "Café".
+function normalizeForSearch(value: string) {
+  return Array.from(value.toLowerCase().normalize("NFD"))
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x0300 || code > 0x036f;
+    })
+    .join("")
+    .trim();
 }
 
 function normalizeAccessCodeInput(value: string) {
@@ -472,6 +542,7 @@ export default function SalesDashboard() {
   const [isItemsBreakdownOpen, setIsItemsBreakdownOpen] = useState(false);
   const [isCashierBreakdownOpen, setIsCashierBreakdownOpen] = useState(false);
   const [cart, setCart] = useState<SaleItemDraft[]>([]);
+  const [productSearch, setProductSearch] = useState("");
   const [manualDiscount, setManualDiscount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [cashierName, setCashierName] = useState("");
@@ -623,13 +694,13 @@ export default function SalesDashboard() {
         .maybeSingle(),
       supabase
         .from("sales")
-        .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total")
+        .select("id, organization_id, created_at, cashier_name, payment_method, gross_total, profit_total, discount_total")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(200),
       supabase
         .from("sale_items")
-        .select("product_id, quantity, unit_price, is_promo, sales!inner(organization_id)")
+        .select("sale_id, product_id, quantity, unit_price, is_promo, product:products(name), sales!inner(organization_id)")
         .eq("sales.organization_id", organizationId),
       supabase
         .from("sales")
@@ -645,7 +716,12 @@ export default function SalesDashboard() {
     setGroups(groupsResult.data ?? []);
     setProducts(productsResult.data ?? []);
     setReport((reportResult.data as SaleReport | null) ?? createEmptyReport(organizationId));
-    setRecentSales((salesResult.data ?? []) as RecentSale[]);
+    setRecentSales(
+      attachSaleItems(
+        (salesResult.data ?? []) as RecentSale[],
+        aggregateSaleItemsBySale(itemsResult.data),
+      ),
+    );
     setProductSalesByOrg((current) => ({
       ...current,
       [organizationId]: aggregateProductSales(itemsResult.data),
@@ -672,7 +748,12 @@ export default function SalesDashboard() {
     setGroups((payload.groups ?? []) as Group[]);
     setProducts((payload.products ?? []) as Product[]);
     setReport((payload.report as SaleReport | null) ?? createEmptyReport(organization.id));
-    setRecentSales((payload.recentSales ?? []) as RecentSale[]);
+    setRecentSales(
+      attachSaleItems(
+        (payload.recentSales ?? []) as RecentSale[],
+        aggregateSaleItemsBySale(payload.saleItems),
+      ),
+    );
     setProductSalesByOrg((current) => ({
       ...current,
       [organization.id]: aggregateProductSales(payload.saleItems),
@@ -739,7 +820,12 @@ export default function SalesDashboard() {
     setGroups((payload.groups ?? []) as Group[]);
     setProducts((payload.products ?? []) as Product[]);
     setReport((payload.report as SaleReport | null) ?? createEmptyReport(organization.id));
-    setRecentSales((payload.recentSales ?? []) as RecentSale[]);
+    setRecentSales(
+      attachSaleItems(
+        (payload.recentSales ?? []) as RecentSale[],
+        aggregateSaleItemsBySale(payload.saleItems),
+      ),
+    );
     setProductSalesByOrg((current) => ({
       ...current,
       [organization.id]: aggregateProductSales(payload.saleItems),
@@ -872,6 +958,18 @@ export default function SalesDashboard() {
     return products.filter((product) => product.organization_id === activeOrganizationId);
   }, [activeOrganizationId, products]);
 
+  // Products shown in the cashier, narrowed by the search box (name, category or responsible).
+  const cashierProducts = useMemo(() => {
+    const query = normalizeForSearch(productSearch);
+    if (!query) return activeProducts;
+    return activeProducts.filter((product) => {
+      const haystack = normalizeForSearch(
+        `${product.name} ${product.category} ${product.group?.name ?? ""}`,
+      );
+      return haystack.includes(query);
+    });
+  }, [activeProducts, productSearch]);
+
   const activeRecentSales = useMemo(() => {
     if (!activeOrganizationId) return [];
     return recentSales.filter((sale) => sale.organization_id === activeOrganizationId);
@@ -940,6 +1038,7 @@ export default function SalesDashboard() {
     setActiveOrganizationId(organizationId);
     setCart([]);
     setManualDiscount("");
+    setProductSearch("");
     setAccessCodeForm((current) => ({ ...current, organizationId }));
     const organization = organizations.find((item) => item.id === organizationId);
     setCashierName((current) => getPreferredCashierName(organization, current));
@@ -1716,6 +1815,11 @@ export default function SalesDashboard() {
         payment_method: paymentMethod,
         gross_total: discountedTotal,
         profit_total: discountedProfit,
+        discount_total: manualDiscountValue,
+        items: cart.map((item) => ({
+          name: item.product.name,
+          quantity: item.quantity,
+        })),
       };
 
       setRecentSales((current) => [sale, ...current].slice(0, 12));
@@ -2336,7 +2440,39 @@ export default function SalesDashboard() {
             <div className="grid gap-5 xl:grid-cols-[1fr_380px]">
               <section className="space-y-4">
                 <SectionHeader title="Venda rápida" />
-                <ProductGrid products={activeProducts} onProductClick={addToCart} mode="sale" />
+                <div className="relative">
+                  <Search
+                    size={18}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
+                  <input
+                    type="text"
+                    value={productSearch}
+                    onChange={(event) => setProductSearch(event.target.value)}
+                    placeholder="Pesquisar produto..."
+                    aria-label="Pesquisar produto"
+                    className="h-11 w-full rounded-md border border-[#d7e3f8] bg-white pl-10 pr-10 text-sm font-medium text-[#10233f] transition focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#2563eb]/20"
+                  />
+                  {productSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setProductSearch("")}
+                      aria-label="Limpar pesquisa"
+                      className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+                {cashierProducts.length > 0 ? (
+                  <ProductGrid products={cashierProducts} onProductClick={addToCart} mode="sale" />
+                ) : (
+                  <div className="rounded-md border border-dashed border-[#bfd4f2] bg-white p-6 text-center text-sm text-slate-500">
+                    {activeProducts.length === 0
+                      ? "Nenhum produto cadastrado ainda. Cadastre na aba Produtos."
+                      : `Nenhum produto encontrado para "${productSearch}".`}
+                  </div>
+                )}
               </section>
               <CartPanel
                 cart={cart}
@@ -4235,6 +4371,25 @@ function SalesList({
                 })}{" "}
                 - {sale.cashier_name ?? "Sem caixa"}
               </p>
+              {sale.items && sale.items.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {sale.items.map((item, itemIndex) => (
+                    <span
+                      key={`${sale.id}-${item.name}-${itemIndex}`}
+                      className="inline-flex items-center gap-1 rounded-full bg-[#eaf3ff] px-2 py-0.5 text-xs font-semibold"
+                    >
+                      <span className="text-[#2563eb]">{item.quantity}×</span>
+                      <span className="text-[#10233f]">{item.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {typeof sale.discount_total === "number" && sale.discount_total > 0 && (
+                <p className="mt-1.5 flex items-center gap-1 text-xs font-bold text-amber-700">
+                  <Ticket size={12} />
+                  Desconto aplicado: -{currency.format(sale.discount_total)}
+                </p>
+              )}
             </div>
             <p className="font-bold min-[420px]:text-right">{currency.format(sale.gross_total)}</p>
             <p className="font-semibold text-[#2563eb] min-[420px]:text-right">+{currency.format(sale.profit_total)}</p>
