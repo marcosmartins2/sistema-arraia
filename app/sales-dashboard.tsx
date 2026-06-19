@@ -472,6 +472,7 @@ export default function SalesDashboard() {
   const [isItemsBreakdownOpen, setIsItemsBreakdownOpen] = useState(false);
   const [isCashierBreakdownOpen, setIsCashierBreakdownOpen] = useState(false);
   const [cart, setCart] = useState<SaleItemDraft[]>([]);
+  const [manualDiscount, setManualDiscount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [cashierName, setCashierName] = useState("");
   const [activeView, setActiveView] = useState<DashboardView>("cashier");
@@ -911,6 +912,16 @@ export default function SalesDashboard() {
     return total + getProductLineTotal(item.product, item.quantity) - item.quantity * item.product.unit_cost;
   }, 0);
 
+  // Manual "desconto na hora": applies to this sale only, never negative and never
+  // larger than the cart total. It lowers revenue and profit by the same amount.
+  const parsedManualDiscount = parseNumber(manualDiscount);
+  const manualDiscountValue =
+    Number.isFinite(parsedManualDiscount) && parsedManualDiscount > 0
+      ? Math.min(parsedManualDiscount, cartTotal)
+      : 0;
+  const discountedTotal = cartTotal - manualDiscountValue;
+  const discountedProfit = cartProfit - manualDiscountValue;
+
   const visibleDashboardViews = dashboardViews.filter(
     (view) => view.id !== "admin" || profile?.role === "admin",
   );
@@ -928,6 +939,7 @@ export default function SalesDashboard() {
   function changeActiveOrganization(organizationId: string) {
     setActiveOrganizationId(organizationId);
     setCart([]);
+    setManualDiscount("");
     setAccessCodeForm((current) => ({ ...current, organizationId }));
     const organization = organizations.find((item) => item.id === organizationId);
     setCashierName((current) => getPreferredCashierName(organization, current));
@@ -1702,8 +1714,8 @@ export default function SalesDashboard() {
         created_at: new Date().toISOString(),
         cashier_name: cashierName,
         payment_method: paymentMethod,
-        gross_total: cartTotal,
-        profit_total: cartProfit,
+        gross_total: discountedTotal,
+        profit_total: discountedProfit,
       };
 
       setRecentSales((current) => [sale, ...current].slice(0, 12));
@@ -1715,11 +1727,11 @@ export default function SalesDashboard() {
 
         return {
           organization_id: activeOrganizationId,
-          gross_revenue: base.gross_revenue + cartTotal,
-          total_cost: base.total_cost + (cartTotal - cartProfit),
-          gross_profit: base.gross_profit + cartProfit,
+          gross_revenue: base.gross_revenue + discountedTotal,
+          total_cost: base.total_cost + (discountedTotal - discountedProfit),
+          gross_profit: base.gross_profit + discountedProfit,
           total_expenses: base.total_expenses,
-          net_profit: base.net_profit + cartProfit,
+          net_profit: base.net_profit + discountedProfit,
           sales_count: base.sales_count + 1,
           items_sold: base.items_sold + cart.reduce((sum, item) => sum + item.quantity, 0),
         };
@@ -1763,12 +1775,13 @@ export default function SalesDashboard() {
         const existing = orgCashiers[key] ?? { count: 0, revenue: 0, profit: 0 };
         orgCashiers[key] = {
           count: existing.count + 1,
-          revenue: existing.revenue + cartTotal,
-          profit: existing.profit + cartProfit,
+          revenue: existing.revenue + discountedTotal,
+          profit: existing.profit + discountedProfit,
         };
         return { ...current, [activeOrganizationId]: orgCashiers };
       });
       setCart([]);
+      setManualDiscount("");
       setStatus("Venda registrada localmente (sem persistência).");
       return;
     }
@@ -1800,6 +1813,7 @@ export default function SalesDashboard() {
         payment_method: paymentMethod,
         organization_id: activeOrganizationId,
         access_code: accessCode || undefined,
+        manual_discount: manualDiscountValue,
         items: cart.map((item) => ({
           product_id: item.product.id,
           quantity: item.quantity,
@@ -1816,6 +1830,7 @@ export default function SalesDashboard() {
     }
 
     setCart([]);
+    setManualDiscount("");
     await loadData();
     showSuccess("Venda registrada com baixa de estoque.");
   }
@@ -2325,12 +2340,16 @@ export default function SalesDashboard() {
               </section>
               <CartPanel
                 cart={cart}
-                cartProfit={cartProfit}
-                cartTotal={cartTotal}
+                subtotal={cartTotal}
+                discountInput={manualDiscount}
+                discountValue={manualDiscountValue}
+                total={discountedTotal}
+                profit={discountedProfit}
                 isSaving={isSaving}
                 paymentMethod={paymentMethod}
                 onChangePayment={setPaymentMethod}
                 onChangeQuantity={changeQuantity}
+                onChangeDiscount={(value) => setManualDiscount(normalizeCurrencyInput(value))}
                 onFinishSale={finishSale}
               />
             </div>
@@ -3988,20 +4007,28 @@ function ProductGrid({
 
 function CartPanel({
   cart,
-  cartProfit,
-  cartTotal,
+  subtotal,
+  discountInput,
+  discountValue,
+  total,
+  profit,
   isSaving,
   onChangePayment,
   onChangeQuantity,
+  onChangeDiscount,
   onFinishSale,
   paymentMethod,
 }: {
   cart: SaleItemDraft[];
-  cartProfit: number;
-  cartTotal: number;
+  subtotal: number;
+  discountInput: string;
+  discountValue: number;
+  total: number;
+  profit: number;
   isSaving: boolean;
   onChangePayment: (value: string) => void;
   onChangeQuantity: (productId: string, delta: number) => void;
+  onChangeDiscount: (value: string) => void;
   onFinishSale: () => void;
   paymentMethod: string;
 }) {
@@ -4100,14 +4127,61 @@ function CartPanel({
         ))}
       </div>
 
+      <div className="mt-4">
+        <label
+          htmlFor="manual-discount"
+          className="flex items-center gap-1.5 text-xs font-bold text-slate-500"
+        >
+          <Ticket size={14} className="text-[#2563eb]" />
+          Desconto nesta venda
+        </label>
+        <div className="mt-2 flex items-center gap-2">
+          <div className="relative flex-1">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">
+              R$
+            </span>
+            <input
+              id="manual-discount"
+              inputMode="numeric"
+              value={discountInput}
+              onChange={(event) => onChangeDiscount(event.target.value)}
+              placeholder="0,00"
+              disabled={cart.length === 0}
+              className="h-10 w-full rounded-md border border-[#d7e3f8] bg-white pl-9 pr-3 text-sm font-semibold text-[#10233f] transition focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#2563eb]/20 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+            />
+          </div>
+          {discountInput && (
+            <button
+              type="button"
+              onClick={() => onChangeDiscount("")}
+              className="inline-flex h-10 shrink-0 items-center justify-center rounded-md border border-[#d7e3f8] px-3 text-xs font-bold text-slate-500 transition hover:border-[#2563eb] hover:text-[#1d4ed8]"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+      </div>
+
       <dl className="mt-5 space-y-2 text-sm">
+        {discountValue > 0 && (
+          <>
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500">Subtotal</dt>
+              <dd className="text-right font-semibold text-slate-600">{currency.format(subtotal)}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500">Desconto</dt>
+              <dd className="text-right font-bold text-red-600">-{currency.format(discountValue)}</dd>
+            </div>
+          </>
+        )}
         <div className="flex justify-between gap-3">
           <dt className="text-slate-500">Total</dt>
-          <dd className="text-right font-bold">{currency.format(cartTotal)}</dd>
+          <dd className="text-right font-bold">{currency.format(total)}</dd>
         </div>
         <div className="flex justify-between gap-3">
           <dt className="text-slate-500">Lucro líquido previsto</dt>
-          <dd className="text-right font-bold text-[#2563eb]">{currency.format(cartProfit)}</dd>
+          <dd className="text-right font-bold text-[#2563eb]">{currency.format(profit)}</dd>
         </div>
       </dl>
 
