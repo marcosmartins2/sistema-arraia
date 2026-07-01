@@ -211,17 +211,32 @@ function aggregateCashierSales(
 // can arrive split across price buckets (promo + regular), so quantities are summed
 // per product name to show the sale the way it was rung up.
 type SaleItemProduct = { name?: string | null } | null;
+type SaleItemSummaryRow = {
+  sale_id?: string | null;
+  product_id?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  is_promo?: boolean | null;
+  product?: SaleItemProduct | SaleItemProduct[];
+};
+type DashboardDataPayload = {
+  organization: Organization;
+  groups?: Group[];
+  products?: Product[];
+  report?: SaleReport | null;
+  recentSales?: RecentSale[];
+  saleItems?: SaleItemSummaryRow[] | null;
+  cashierSales?:
+    | Array<{
+        cashier_name?: string | null;
+        gross_total?: number | null;
+        profit_total?: number | null;
+      }>
+    | null;
+};
 
 function aggregateSaleItemsBySale(
-  rows:
-    | Array<{
-        sale_id?: string | null;
-        quantity?: number | null;
-        // Supabase types embedded relations as an array; a manual payload may send an object.
-        product?: SaleItemProduct | SaleItemProduct[];
-      }>
-    | null
-    | undefined,
+  rows: SaleItemSummaryRow[] | null | undefined,
 ): Record<string, RecentSaleItem[]> {
   const bySale: Record<string, Map<string, RecentSaleItem>> = {};
   if (!rows) return {};
@@ -733,8 +748,8 @@ export default function SalesDashboard() {
     setStatus("Dados sincronizados com Supabase.");
   }
 
-  function applyAccessCodePayload(code: string, payload: any) {
-    const organization = payload.organization as Organization;
+  function applyAccessCodePayload(code: string, payload: DashboardDataPayload) {
+    const organization = payload.organization;
     setAuthMessage(null);
     setAccessCode(code);
     if (typeof window !== "undefined") {
@@ -894,11 +909,11 @@ export default function SalesDashboard() {
     const normalized = normalizeAccessCodeInput(saved);
     if (!isAccessCodeFormatValid(normalized)) {
       window.localStorage.removeItem(ACCESS_CODE_STORAGE_KEY);
+      queueMicrotask(() => setIsAuthReady(true));
       return;
     }
 
     let cancelled = false;
-    setIsAuthReady(false);
     (async () => {
       try {
         const response = await fetch(dashboardDataUrl, {
@@ -927,7 +942,6 @@ export default function SalesDashboard() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
