@@ -1552,7 +1552,7 @@ export default function SalesDashboard() {
       setRecentSales((current) => current.filter((item) => item.id !== saleId));
     };
 
-    if (isOfficialAdminSession || !isSupabaseConfigured || !deleteSaleUrl) {
+    if (!isSupabaseConfigured || !deleteSaleUrl || !supabase) {
       applyLocal();
       setStatus("Venda excluida localmente (sem persistencia).");
       return;
@@ -4526,7 +4526,22 @@ function ItemsBreakdownModal({
   totalItems: number;
   onClose: () => void;
 }) {
-  const hasAnyPromotion = breakdown.some((item) => item.promoQuantity > 0);
+  const groupedBreakdown = Array.from(
+    breakdown
+      .filter((item) => item.quantity > 0)
+      .reduce((groups, item) => {
+        const category = item.product.category?.trim() || "Sem categoria";
+        const group = groups.get(category) ?? [];
+        group.push(item);
+        groups.set(category, group);
+        return groups;
+      }, new Map<string, typeof breakdown>()),
+  )
+    .map(([category, items]) => ({
+      category,
+      items: items.sort((a, b) => b.quantity - a.quantity || a.product.name.localeCompare(b.product.name)),
+    }))
+    .sort((a, b) => a.category.localeCompare(b.category, "pt-BR"));
   return (
     <div
       role="dialog"
@@ -4547,18 +4562,6 @@ function ItemsBreakdownModal({
             <p className="mt-1 text-sm text-slate-500">
               Total no evento: <strong className="text-[#10233f]">{totalItems}</strong>
             </p>
-            {hasAnyPromotion && (
-              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs font-semibold">
-                <span className="inline-flex items-center gap-1.5 text-emerald-700">
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" aria-hidden />
-                  Vendas
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-amber-700">
-                  <span className="h-2.5 w-2.5 rounded-full bg-amber-500" aria-hidden />
-                  Promo
-                </span>
-              </div>
-            )}
           </div>
           <button
             type="button"
@@ -4570,65 +4573,45 @@ function ItemsBreakdownModal({
           </button>
         </div>
         <div className="max-h-[60vh] overflow-y-auto p-4 sm:p-5">
-          {breakdown.length === 0 ? (
+          {groupedBreakdown.length === 0 ? (
             <p className="text-sm text-slate-500">Nenhum produto cadastrado para esta organização.</p>
           ) : (
-            <ul className="divide-y divide-[#e3ecfb]">
-              {breakdown.map(({ product, quantity, promoQuantity, tiers }) => {
-                const showTiers = tiers.length > 1 || promoQuantity > 0;
-                return (
-                  <li key={product.id} className="py-2.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-[#10233f]">{product.name}</p>
-                        {product.category && (
-                          <p className="truncate text-xs text-slate-500">{product.category}</p>
-                        )}
-                      </div>
-                      <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
-                        {quantity}
-                      </span>
-                    </div>
-                    {showTiers && (
-                      <ul className="mt-2 space-y-1 border-l-2 border-[#e3ecfb] pl-3">
-                        {tiers.map((tier) => (
-                          <li
-                            key={priceTierKey(tier.price, tier.isPromo)}
-                            className="flex items-center justify-between gap-2 text-xs"
-                          >
-                            <span className="inline-flex items-center gap-1.5">
-                              <span
-                                className={`h-2 w-2 rounded-full ${
-                                  tier.isPromo ? "bg-amber-500" : "bg-emerald-500"
-                                }`}
-                                aria-hidden
-                              />
-                              <span className="font-semibold text-[#10233f]">
-                                {currency.format(tier.price)}
-                              </span>
-                              {tier.isPromo && (
-                                <span className="rounded bg-amber-50 px-1.5 py-0.5 font-bold text-amber-700">
-                                  promo
-                                </span>
-                              )}
-                            </span>
-                            <span
-                              className={`rounded-md px-2 py-0.5 font-bold ${
-                                tier.isPromo
-                                  ? "bg-amber-50 text-amber-700"
-                                  : "bg-emerald-50 text-emerald-700"
-                              }`}
-                            >
-                              {tier.quantity}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="space-y-5">
+              {groupedBreakdown.map(({ category, items }) => (
+                <section key={category}>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-black uppercase text-[#0b3a75]">{category}</h3>
+                    <span className="rounded bg-[#f0f6ff] px-2 py-1 text-xs font-bold text-[#2563eb]">
+                      {items.reduce((sum, item) => sum + item.quantity, 0)} itens
+                    </span>
+                  </div>
+                  <ul className="divide-y divide-[#e3ecfb] rounded-md border border-[#e3ecfb]">
+                    {items.map(({ product, quantity, tiers }) => (
+                      <li key={product.id} className="px-3 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-[#10233f]">{product.name}</p>
+                            {tiers.length > 0 && (
+                              <div className="mt-1 space-y-0.5 text-xs text-slate-600">
+                                {tiers.map((tier) => (
+                                  <p key={priceTierKey(tier.price, tier.isPromo)}>
+                                    <strong className="text-slate-700">{currency.format(tier.price)}</strong>:{" "}
+                                    {tier.quantity}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <span className="shrink-0 rounded-md bg-[#f0f6ff] px-2.5 py-1 text-sm font-bold text-[#2563eb]">
+                            {quantity}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
           )}
         </div>
       </div>
