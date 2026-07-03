@@ -176,3 +176,15 @@ export async function listProductsFor(organizationId: string) {
   }
   return result.data ?? [];
 }
+
+export async function getOrganizationFor(organizationId: string) {
+  const result = await adminClient
+    .from("organizations")
+    .select("id, name, cashier_names")
+    .eq("id", organizationId)
+    .single();
+  if (result.error) {
+    throw new Error(`Failed loading organization: ${result.error.message}`);
+  }
+  return result.data;
+}

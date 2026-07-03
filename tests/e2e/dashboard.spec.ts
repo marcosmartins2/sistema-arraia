@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import {
   createSandbox,
   teardownSandbox,
+  getOrganizationFor,
   getProductStock,
   listSalesFor,
   listProductsFor,
@@ -223,6 +224,37 @@ test.describe("Product persistence", () => {
     expect(Number(created?.unit_cost)).toBe(1);
     expect(Number(created?.stock_quantity)).toBe(40);
     expect(created?.is_active).toBe(true);
+  });
+});
+
+test.describe("Event settings persistence", () => {
+  test("adds and removes cashiers for the current event", async ({ page }) => {
+    await loginWithAccessCode(page, ctx.accessCode);
+
+    const uniqueCashier = `E2E Caixa Novo ${Date.now()}`;
+    await page.getByRole("button", { name: /Configuracoes do evento/i }).click();
+    await expect(page.getByRole("heading", { name: /Configura/i })).toBeVisible();
+    await page.getByPlaceholder("Nome do vendedor").fill(uniqueCashier);
+    await page.getByRole("button", { name: /Adicionar/i }).click();
+    await page.getByRole("button", { name: /Salvar/i }).click();
+
+    await expect
+      .poll(async () => {
+        const organization = await getOrganizationFor(ctx.organizationId);
+        return organization.cashier_names as string[];
+      }, { timeout: 15_000 })
+      .toContain(uniqueCashier);
+
+    await page.getByRole("button", { name: /Configuracoes do evento/i }).click();
+    await page.getByLabel(new RegExp(`Remover vendedor \\d+`)).last().click();
+    await page.getByRole("button", { name: /Salvar/i }).click();
+
+    await expect
+      .poll(async () => {
+        const organization = await getOrganizationFor(ctx.organizationId);
+        return organization.cashier_names as string[];
+      }, { timeout: 15_000 })
+      .not.toContain(uniqueCashier);
   });
 });
 

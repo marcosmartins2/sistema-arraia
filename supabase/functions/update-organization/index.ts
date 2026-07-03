@@ -31,6 +31,7 @@ Deno.serve(async (request) => {
 
     const payload = await request.json();
     const accessCodeRaw = String(payload?.access_code ?? "").trim().toUpperCase();
+    const organizationIdRaw = String(payload?.organization_id ?? "").trim();
 
     if (!accessCodeRaw) {
       return Response.json(
@@ -58,6 +59,12 @@ Deno.serve(async (request) => {
     }
 
     const organizationId = accessCode.organization_id;
+    if (organizationIdRaw && organizationIdRaw !== organizationId) {
+      return Response.json(
+        { error: "Codigo de acesso nao pertence a este evento." },
+        { status: 403, headers: corsHeaders },
+      );
+    }
     const patch: Record<string, unknown> = {};
 
     if (typeof payload?.name === "string") {

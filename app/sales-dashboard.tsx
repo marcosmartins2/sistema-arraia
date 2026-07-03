@@ -1144,6 +1144,7 @@ export default function SalesDashboard() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             access_code: accessCode,
+            organization_id: organizationId,
             name,
             cashier_names: cashierNames,
           }),
