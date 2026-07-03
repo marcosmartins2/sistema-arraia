@@ -4372,7 +4372,11 @@ function SalesList({
     <div className="overflow-hidden rounded-md border border-[#d7e3f8] bg-white p-3 shadow-md shadow-[#0b3a75]/5 sm:p-4">
       <div className="divide-y divide-[#dfe8f7]">
         {sales.map((sale, index) => (
-          <div key={sale.id} className={`grid min-w-0 gap-2 rounded-md px-2 py-4 first:pt-3 last:pb-3 ${gridColumns} min-[420px]:items-center sm:gap-3 sm:px-3 ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}>
+          <div
+            key={sale.id}
+            data-sale-id={sale.id}
+            className={`grid min-w-0 gap-2 rounded-md px-2 py-4 first:pt-3 last:pb-3 ${gridColumns} min-[420px]:items-center sm:gap-3 sm:px-3 ${index % 2 === 0 ? "bg-white" : "bg-[#f8fbff]"}`}
+          >
             <div className="min-w-0">
               <p className="font-medium text-[#10233f]">
                 {paymentLabels[sale.payment_method] ?? sale.payment_method}

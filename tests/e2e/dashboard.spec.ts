@@ -127,6 +127,7 @@ test.describe("Sale persistence", () => {
 
     const stockBefore = await getProductStock(ctx.productIds[1]);
     expect(stockBefore).toBe(30);
+    const salesBeforeDeleteTest = await listSalesFor(ctx.organizationId);
 
     test.info().annotations.push({
       type: "issue",
@@ -147,12 +148,22 @@ test.describe("Sale persistence", () => {
       .poll(async () => getProductStock(ctx.productIds[1]), { timeout: 15_000 })
       .toBe(29);
 
+    let saleToDeleteId = "";
+    await expect
+      .poll(async () => {
+        const sales = await listSalesFor(ctx.organizationId);
+        saleToDeleteId = sales.length > salesBeforeDeleteTest.length ? sales[0].id : "";
+        return saleToDeleteId;
+      }, { timeout: 15_000 })
+      .not.toBe("");
+
     await sectionTabs(page).getByRole("button", { name: /^Vendas$/ }).click();
 
-    await expect(page.getByRole("button", { name: "Excluir venda" }).first()).toBeVisible({
+    const saleRow = page.locator(`[data-sale-id="${saleToDeleteId}"]`);
+    await expect(saleRow.getByRole("button", { name: "Excluir venda" })).toBeVisible({
       timeout: 10_000,
     });
-    await page.getByRole("button", { name: "Excluir venda" }).first().click();
+    await saleRow.getByRole("button", { name: "Excluir venda" }).click();
 
     await expect(page.getByRole("heading", { name: "Excluir venda" })).toBeVisible();
     await page.getByRole("button", { name: "Excluir", exact: true }).click();
@@ -187,8 +198,14 @@ test.describe("Sale persistence", () => {
       .toBe(30);
 
     await expect
-      .poll(async () => (await listSalesFor(ctx.organizationId)).length, { timeout: 10_000 })
-      .toBe(0);
+      .poll(async () => {
+        const sales = await listSalesFor(ctx.organizationId);
+        return {
+          count: sales.length,
+          deletedSaleExists: sales.some((sale) => sale.id === saleToDeleteId),
+        };
+      }, { timeout: 10_000 })
+      .toEqual({ count: salesBeforeDeleteTest.length, deletedSaleExists: false });
   });
 });
 
